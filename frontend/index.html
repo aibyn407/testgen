@@ -1,99 +1,156 @@
 <!DOCTYPE html>
-<html lang="kz">
+<html lang="kk">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>TestGen — AI тесты</title>
+<title>TestGen</title>
 <link rel="stylesheet" href="/style.css" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
 <header>
-  <div class="brand" onclick="goHome()">
-    <span class="logo">TG</span>
-    <span data-i18n="brand">TestGen</span>
-  </div>
-  <div class="lang-switch">
-    <button onclick="setLang('kz')" id="btn-kz">KZ</button>
-    <button onclick="setLang('ru')" id="btn-ru">RU</button>
-    <button onclick="setLang('en')" id="btn-en">EN</button>
+  <div class="brand" onclick="goHome()"><span class="logo">TG</span><span>TestGen</span></div>
+  <div class="header-right">
+    <span class="user-chip hidden" id="user-chip"></span>
+    <div class="lang-switch">
+      <button data-lang="kz" onclick="setLang('kz')">KZ</button>
+      <button data-lang="ru" onclick="setLang('ru')">RU</button>
+      <button data-lang="en" onclick="setLang('en')">EN</button>
+    </div>
+    <button class="small hidden" id="logout-btn" onclick="logout()" data-i18n="logout">Шығу</button>
   </div>
 </header>
 
 <main>
-  <!-- HOME -->
-  <section id="view-home" class="view">
-    <h1 data-i18n="home_title">AI жасаған тест қабырғасы</h1>
-    <p class="sub" data-i18n="home_sub">Файл жүкте — AI тақырып бойынша 15 сұрақтан жасайды</p>
+  <!-- AUTH -->
+  <section id="view-auth" class="view hidden">
+    <div class="auth-box">
+      <h1 data-i18n="auth_title"></h1>
+      <p class="sub" data-i18n="auth_sub"></p>
+      <form class="card" onsubmit="submitAuth(event)">
+        <label class="field"><span data-i18n="username"></span>
+          <input type="text" id="auth-user" autocomplete="username" required minlength="3" maxlength="40" />
+        </label>
+        <label class="field"><span data-i18n="password"></span>
+          <input type="password" id="auth-pass" autocomplete="current-password" required minlength="6" />
+        </label>
+        <button class="primary big" id="auth-submit" type="submit"></button>
+        <div class="status" id="auth-status"></div>
+        <div style="text-align:center"><button type="button" class="link" id="auth-toggle" onclick="toggleAuthMode()"></button></div>
+      </form>
+    </div>
+  </section>
 
-    <div class="card upload-card">
-      <h2 data-i18n="upload_title">Файл жүктеу</h2>
-      <input type="file" id="file-input" accept=".docx,.pdf,.txt,.md" />
-      <input type="text" id="title-input" placeholder="" />
+  <!-- HOME -->
+  <section id="view-home" class="view hidden">
+    <div class="card accent-top">
+      <h2 data-i18n="upload_title"></h2>
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="file-input" accept=".docx,.pdf,.txt,.md" onchange="onFilePicked()" />
+        <strong id="file-name" data-i18n="choose_file"></strong>
+        <span class="small" data-i18n="upload_hint"></span>
+      </label>
+      <label class="field"><input type="text" id="title-input" data-i18n-ph="title_placeholder" maxlength="200" /></label>
       <div class="row">
-        <label data-i18n="language">Тіл:</label>
-        <select id="lang-select">
+        <label class="small" for="lang-select" data-i18n="test_language"></label>
+        <select id="lang-select" style="width:auto">
           <option value="kz">Қазақша</option>
           <option value="ru">Русский</option>
           <option value="en">English</option>
         </select>
+        <span class="spacer"></span>
+        <button class="primary" onclick="uploadFile()" id="upload-btn" data-i18n="upload_btn"></button>
       </div>
-      <button class="primary" onclick="uploadFile()" id="upload-btn" data-i18n="upload_btn">Жүктеу</button>
       <div id="upload-status" class="status"></div>
     </div>
 
-    <div class="card">
-      <h2 data-i18n="existing_tests">Бұрын жүктелген тесттер</h2>
-      <div id="tests-list" class="tests-list"></div>
-    </div>
+    <h2 data-i18n="home_title" style="margin-top:28px"></h2>
+    <div id="tests-list"></div>
   </section>
 
-  <!-- TEST DETAIL -->
+  <!-- TEST -->
   <section id="view-test" class="view hidden">
-    <button class="back" onclick="goHome()">← <span data-i18n="back">Артқа</span></button>
+    <button class="link" onclick="goHome()">← <span data-i18n="back"></span></button>
     <h1 id="test-title"></h1>
-    <div class="row">
-      <button class="ghost" onclick="showResults()" data-i18n="view_results">Нәтижелер</button>
-      <button class="danger" onclick="deleteTest()" data-i18n="delete">Жою</button>
-    </div>
-    <h2 data-i18n="topics">Тақырыптар</h2>
-    <div id="topics-list" class="topics-list"></div>
-  </section>
+    <p class="meta" id="test-meta"></p>
 
-  <!-- QUIZ -->
-  <section id="view-quiz" class="view hidden">
-    <button class="back" onclick="backToTest()">← <span data-i18n="back">Артқа</span></button>
-    <h1 id="quiz-title"></h1>
-    <div class="card">
-      <label data-i18n="your_name">Атыңыз:</label>
-      <input type="text" id="user-name" placeholder="" />
+    <div class="card accent-top">
+      <h3 data-i18n="share_title"></h3>
+      <div class="share-box">
+        <input type="text" id="share-link" readonly onclick="this.select()" />
+        <button class="primary" onclick="copyLink(this)" data-i18n="copy"></button>
+        <a class="btn" id="share-open" target="_blank" rel="noopener" data-i18n="open_link"></a>
+      </div>
+      <p class="small muted" id="share-hint" style="margin:10px 0 0"></p>
     </div>
-    <div id="questions-container"></div>
-    <button class="primary big" onclick="submitQuiz()" data-i18n="submit">Жауаптарды тапсыру</button>
-  </section>
 
-  <!-- RESULT -->
-  <section id="view-result" class="view hidden">
-    <button class="back" onclick="backToTest()">← <span data-i18n="back">Артқа</span></button>
-    <h1 data-i18n="your_result">Нәтижеңіз</h1>
-    <div class="score-big" id="score-big"></div>
-    <div id="result-details"></div>
-  </section>
-
-  <!-- RESULTS LIST + CHARTS -->
-  <section id="view-results" class="view hidden">
-    <button class="back" onclick="backToTest()">← <span data-i18n="back">Артқа</span></button>
-    <h1 data-i18n="all_results">Барлық нәтижелер</h1>
-    <div class="charts-grid">
-      <div class="card"><canvas id="chart-scores"></canvas></div>
-      <div class="card"><canvas id="chart-topics"></canvas></div>
+    <div class="tabs">
+      <button data-tab="questions" onclick="showTab('questions')" data-i18n="tab_questions"></button>
+      <button data-tab="settings" onclick="showTab('settings')" data-i18n="tab_settings"></button>
+      <button data-tab="results" onclick="showTab('results')" data-i18n="tab_results"></button>
     </div>
-    <div class="card">
-      <h2 data-i18n="participants">Қатысушылар</h2>
-      <table id="results-table" class="results-table"></table>
+
+    <!-- questions tab -->
+    <div id="tab-questions" class="tab">
+      <div class="card">
+        <div class="row" style="margin-bottom:6px">
+          <h2 style="margin:0" data-i18n="topics"></h2>
+          <span class="spacer"></span>
+          <select id="gen-count" style="width:auto">
+            <option value="5">5</option><option value="10">10</option>
+            <option value="15" selected>15</option><option value="20">20</option>
+          </select>
+          <span class="small muted" data-i18n="per_topic"></span>
+        </div>
+        <div id="topics-list"></div>
+        <button class="primary" style="margin-top:12px" id="gen-all-btn" onclick="generateAll()" data-i18n="generate_all"></button>
+      </div>
+      <div id="questions-list"></div>
+    </div>
+
+    <!-- settings tab -->
+    <div id="tab-settings" class="tab hidden">
+      <form class="card" onsubmit="saveSettings(event)">
+        <label class="field"><span data-i18n="s_title"></span><input type="text" id="s-title" maxlength="200" required /></label>
+        <div class="switch-row"><span data-i18n="s_open"></span><input type="checkbox" id="s-open" /></div>
+        <div class="switch-row"><span data-i18n="s_time"></span><input type="number" id="s-time" min="0" max="600" /></div>
+        <div class="switch-row"><span data-i18n="s_limit"></span><input type="number" id="s-limit" min="0" max="500" /></div>
+        <div class="switch-row"><span data-i18n="s_shuffle"></span><input type="checkbox" id="s-shuffle" /></div>
+        <div class="switch-row"><span data-i18n="s_show"></span><input type="checkbox" id="s-show" /></div>
+        <div class="row end" style="margin-top:12px">
+          <span class="status" id="settings-status" style="margin:0"></span>
+          <button class="primary" type="submit" data-i18n="save"></button>
+        </div>
+      </form>
+
+      <div class="card">
+        <h3 data-i18n="integration"></h3>
+        <p class="small muted" data-i18n="integration_hint"></p>
+        <div class="row">
+          <button onclick="download('moodle')" data-i18n="export_moodle"></button>
+          <button onclick="download('platonus')" data-i18n="export_platonus"></button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 data-i18n="danger_zone"></h3>
+        <button class="danger" onclick="deleteTest()" data-i18n="delete_test"></button>
+      </div>
+    </div>
+
+    <!-- results tab -->
+    <div id="tab-results" class="tab hidden">
+      <div class="row" style="margin-bottom:12px">
+        <button onclick="loadResults()" data-i18n="refresh"></button>
+        <span class="spacer"></span>
+        <button class="primary" onclick="download('results')" data-i18n="export_excel"></button>
+      </div>
+      <div id="results-body"></div>
     </div>
   </section>
 </main>
+
+<div id="modal-root"></div>
 
 <script src="/i18n.js"></script>
 <script src="/app.js"></script>

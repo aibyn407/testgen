@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="kk">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TestGen — тест</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">TG</span><span>TestGen</span></div>
+  <div class="lang-switch">
+    <button data-lang="kz" onclick="setLang('kz')">KZ</button>
+    <button data-lang="ru" onclick="setLang('ru')">RU</button>
+    <button data-lang="en" onclick="setLang('en')">EN</button>
+  </div>
+</header>
+
+<main class="narrow">
+  <div id="loading" class="center-msg"><span class="spinner"></span></div>
+  <div id="message" class="card center-msg hidden"></div>
+
+  <!-- start -->
+  <section id="view-start" class="hidden">
+    <form class="card accent-top" onsubmit="startTest(event)">
+      <h1 id="start-title"></h1>
+      <p class="meta" id="start-meta"></p>
+      <label class="field"><span data-i18n="full_name"></span>
+        <input type="text" id="student-name" data-i18n-ph="full_name_ph" required minlength="2" maxlength="80" autocomplete="name" />
+      </label>
+      <label class="field"><span data-i18n="group"></span>
+        <input type="text" id="student-group" data-i18n-ph="group_ph" maxlength="40" />
+      </label>
+      <button class="primary big" type="submit" data-i18n="start"></button>
+    </form>
+  </section>
+
+  <!-- questions -->
+  <section id="view-quiz" class="hidden">
+    <div class="card accent-top test-head">
+      <h1 id="quiz-title"></h1>
+      <p class="meta" id="quiz-student"></p>
+    </div>
+    <div class="timer hidden" id="timer"></div>
+    <div id="questions"></div>
+    <div class="status err" id="submit-status"></div>
+    <button class="primary big" id="submit-btn" onclick="submitAnswers(false)" data-i18n="submit"></button>
+  </section>
+
+  <!-- result -->
+  <section id="view-result" class="hidden">
+    <div class="card accent-top score-hero" id="score-hero"></div>
+    <div id="review"></div>
+  </section>
+</main>
+
+<script src="/i18n.js"></script>
+<script src="/take.js"></script>
+</body>
+</html>

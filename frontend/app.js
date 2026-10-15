@@ -1,321 +1,525 @@
-const API = "";
-let STATE = {
-  currentTestId: null,
-  currentTopicId: null,
-  currentQuestions: [],
-};
+// Teacher app: sign in, upload files, generate/edit questions, share link, view results.
 
-async function api(method, path, body, isForm = false) {
-  const opts = { method, headers: {} };
-  if (body) {
-    if (isForm) opts.body = body;
-    else { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+const S = {
+  token: storageGet("token"),
+  username: storageGet("username"),
+  authMode: "login",
+  testId: null,
+  tab: "questions",
+  data: null,      // {test, topics, questions}
+  results: null,
+  editing: null,   // question id being edited
+};
+let CHARTS = [];
+
+function storageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function storageSet(k, v) { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} }
+
+async function api(method, path, body, opts = {}) {
+  try {
+    return await apiCall(method, path, body, { ...opts, token: S.token });
+  } catch (e) {
+    if (e.status === 401 && e.code === "auth_required") { signOutLocal(); route(); }
+    throw e;
   }
-  const r = await fetch(API + path, opts);
-  if (!r.ok) {
-    const err = await r.text();
-    throw new Error(err || r.statusText);
-  }
-  return r.json();
 }
 
 function show(id) {
-  document.querySelectorAll(".view").forEach(v => v.classList.add("hidden"));
-  document.getElementById(id).classList.remove("hidden");
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("hidden", v.id !== id));
 }
 
-function goHome() {
-  STATE.currentTestId = null;
-  show("view-home");
-  loadTests();
+// ---------- routing (#/test/12/results) ----------
+
+function route() {
+  const signedIn = !!S.token;
+  document.getElementById("logout-btn").classList.toggle("hidden", !signedIn);
+  const chip = document.getElementById("user-chip");
+  chip.classList.toggle("hidden", !signedIn);
+  chip.textContent = S.username || "";
+  if (!signedIn) { renderAuth(); show("view-auth"); return; }
+
+  const m = location.hash.match(/^#\/test\/(\d+)(?:\/(\w+))?/);
+  if (m) openTest(Number(m[1]), m[2] || "questions");
+  else { S.testId = null; S.data = null; show("view-home"); loadTests(); }
+}
+window.addEventListener("hashchange", route);
+
+function goHome() { location.hash = ""; }
+
+function onLangChange() {
+  if (!document.getElementById("view-auth").classList.contains("hidden")) renderAuth();
+  else if (S.testId && !document.getElementById("view-test").classList.contains("hidden")) renderTest();
+  else if (S.token) loadTests();
 }
 
-function refreshView() {
-  const home = document.getElementById("view-home");
-  if (!home.classList.contains("hidden")) loadTests();
-  if (STATE.currentTestId && !document.getElementById("view-test").classList.contains("hidden")) {
-    openTest(STATE.currentTestId);
-  }
+// ---------- auth ----------
+
+function renderAuth() {
+  const login = S.authMode === "login";
+  document.getElementById("auth-submit").textContent = t(login ? "login" : "register");
+  document.getElementById("auth-toggle").textContent = t(login ? "no_account" : "have_account");
+  document.getElementById("auth-pass").autocomplete = login ? "current-password" : "new-password";
 }
+
+function toggleAuthMode() {
+  S.authMode = S.authMode === "login" ? "register" : "login";
+  document.getElementById("auth-status").textContent = "";
+  renderAuth();
+}
+
+async function submitAuth(e) {
+  e.preventDefault();
+  const status = document.getElementById("auth-status");
+  const btn = document.getElementById("auth-submit");
+  btn.disabled = true;
+  status.className = "status";
+  try {
+    const res = await apiCall("POST", `/api/auth/${S.authMode}`, {
+      username: document.getElementById("auth-user").value.trim(),
+      password: document.getElementById("auth-pass").value,
+    });
+    S.token = res.token; S.username = res.username;
+    storageSet("token", res.token); storageSet("username", res.username);
+    document.getElementById("auth-pass").value = "";
+    route();
+  } catch (err) {
+    status.className = "status err"; status.textContent = err.message;
+  } finally { btn.disabled = false; }
+}
+
+function signOutLocal() {
+  S.token = null; S.username = null;
+  storageSet("token", null); storageSet("username", null);
+}
+
+async function logout() {
+  try { await apiCall("POST", "/api/auth/logout", null, { token: S.token }); } catch {}
+  signOutLocal();
+  location.hash = "";
+  route();
+}
+
+// ---------- home ----------
 
 async function loadTests() {
   const list = document.getElementById("tests-list");
-  list.innerHTML = `<div class="status"><span class="spinner"></span>…</div>`;
+  list.innerHTML = `<div class="status"><span class="spinner"></span></div>`;
   try {
     const tests = await api("GET", "/api/tests");
-    if (!tests.length) { list.innerHTML = `<div class="status">${t("no_tests")}</div>`; return; }
-    list.innerHTML = tests.map(t_ => `
-      <div class="test-item" onclick="openTest(${t_.id})">
-        <div>
-          <div><strong>${escapeHtml(t_.title)}</strong></div>
-          <div class="test-meta">${t_.topics_count} ${t("topics").toLowerCase()} · ${t_.attempts_count} ${t("participants").toLowerCase()} · ${t_.language.toUpperCase()}</div>
+    if (!tests.length) { list.innerHTML = `<div class="card muted">${t("no_tests")}</div>`; return; }
+    list.innerHTML = tests.map(x => `
+      <div class="list-item" onclick="location.hash='#/test/${x.id}'">
+        <div style="flex:1;min-width:0">
+          <div class="title">${escapeHtml(x.title)}</div>
+          <div class="meta">${x.questions_count} ${t("questions_n")} · ${x.attempts_count} ${t("attempts_n")} · ${new Date(x.created_at).toLocaleDateString()}</div>
         </div>
-        <div class="test-meta">${new Date(t_.created_at).toLocaleDateString()}</div>
-      </div>
-    `).join("");
-  } catch (e) { list.innerHTML = `<div class="status err">${e.message}</div>`; }
+        <span class="pill ${x.is_open ? "ok" : "off"}">${t(x.is_open ? "open" : "closed")}</span>
+      </div>`).join("");
+  } catch (e) { list.innerHTML = `<div class="status err">${escapeHtml(e.message)}</div>`; }
 }
+
+function onFilePicked() {
+  const f = document.getElementById("file-input").files[0];
+  const label = document.getElementById("file-name");
+  label.textContent = f ? f.name : t("choose_file");
+  if (f) label.removeAttribute("data-i18n"); else label.dataset.i18n = "choose_file";
+}
+
+(function setupDropzone() {
+  const dz = document.getElementById("dropzone");
+  ["dragenter", "dragover"].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add("drag"); }));
+  ["dragleave", "drop"].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove("drag"); }));
+  dz.addEventListener("drop", e => {
+    if (e.dataTransfer.files.length) {
+      document.getElementById("file-input").files = e.dataTransfer.files;
+      onFilePicked();
+    }
+  });
+})();
 
 async function uploadFile() {
   const fileEl = document.getElementById("file-input");
-  const titleEl = document.getElementById("title-input");
-  const langEl = document.getElementById("lang-select");
-  const btn = document.getElementById("upload-btn");
   const status = document.getElementById("upload-status");
-  if (!fileEl.files[0]) { status.className = "status err"; status.textContent = "Выбери файл"; return; }
+  const btn = document.getElementById("upload-btn");
+  if (!fileEl.files[0]) { status.className = "status err"; status.textContent = t("choose_file"); return; }
 
   const fd = new FormData();
   fd.append("file", fileEl.files[0]);
-  if (titleEl.value) fd.append("title", titleEl.value);
-  fd.append("language", langEl.value);
+  fd.append("title", document.getElementById("title-input").value);
+  fd.append("language", document.getElementById("lang-select").value);
 
   btn.disabled = true;
   status.className = "status";
-  status.innerHTML = `<span class="spinner"></span>${t("uploading")}`;
-
+  status.innerHTML = `<span class="spinner"></span> ${t("uploading")}`;
   try {
-    const res = await api("POST", "/api/upload", fd, true);
-    status.className = "status ok";
-    status.textContent = `✓ ${res.topics_count} ${t("topics").toLowerCase()}`;
-    fileEl.value = ""; titleEl.value = "";
-    loadTests();
-    openTest(res.test_id);
+    const res = await api("POST", "/api/upload", fd, { isForm: true });
+    status.textContent = "";
+    fileEl.value = ""; document.getElementById("title-input").value = ""; onFilePicked();
+    location.hash = `#/test/${res.test_id}`;
   } catch (e) {
     status.className = "status err"; status.textContent = e.message;
   } finally { btn.disabled = false; }
 }
 
-async function openTest(testId) {
-  STATE.currentTestId = testId;
+// ---------- test page ----------
+
+async function openTest(id, tab) {
   show("view-test");
-  try {
-    const d = await api("GET", `/api/tests/${testId}`);
-    document.getElementById("test-title").textContent = d.test.title;
-    const list = document.getElementById("topics-list");
-    list.innerHTML = d.topics.map(tp => `
-      <div class="topic-item">
-        <div>
-          <div><strong>${escapeHtml(tp.name)}</strong></div>
-          <div class="topic-meta">${tp.questions_count} ${t("questions_count")}</div>
-        </div>
-        <div class="actions">
-          ${tp.questions_count > 0
-            ? `<button class="primary" onclick="startQuiz(${tp.id}, '${escapeAttr(tp.name)}')">${t("start_test")}</button>
-               <button class="ghost" onclick="generateQuestions(${tp.id}, this)">${t("regenerate")}</button>`
-            : `<button class="primary" onclick="generateQuestions(${tp.id}, this)">${t("generate")}</button>`}
-        </div>
-      </div>
-    `).join("");
-  } catch (e) { alert(e.message); }
-}
-
-async function generateQuestions(topicId, btn) {
-  const old = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = `<span class="spinner"></span>${t("generating")}`;
-  try {
-    await api("POST", `/api/topics/${topicId}/generate`, { count: 15 });
-    openTest(STATE.currentTestId);
-  } catch (e) {
-    alert("AI: " + e.message);
-    btn.disabled = false; btn.innerHTML = old;
+  if (S.testId !== id || !S.data) {
+    S.testId = id; S.data = null; S.results = null;
+    document.getElementById("test-title").textContent = "…";
+    try { S.data = await api("GET", `/api/tests/${id}`); }
+    catch (e) { alert(e.message); goHome(); return; }
   }
+  S.tab = ["questions", "settings", "results"].includes(tab) ? tab : "questions";
+  renderTest();
 }
 
-async function startQuiz(topicId, topicName) {
-  STATE.currentTopicId = topicId;
-  show("view-quiz");
-  document.getElementById("quiz-title").textContent = topicName;
-  document.getElementById("user-name").value = localStorage.getItem("user_name") || "";
-  const container = document.getElementById("questions-container");
-  container.innerHTML = `<div class="status"><span class="spinner"></span>…</div>`;
-  try {
-    const qs = await api("GET", `/api/topics/${topicId}/questions`);
-    STATE.currentQuestions = qs;
-    container.innerHTML = qs.map((q, i) => renderQuestion(q, i)).join("");
-    attachMatchingHandlers();
-  } catch (e) { container.innerHTML = `<div class="status err">${e.message}</div>`; }
+async function reloadTest() {
+  S.data = await api("GET", `/api/tests/${S.testId}`);
+  renderTest();
 }
 
-function renderQuestion(q, i) {
-  const typeLabel = { multiple_choice: t("type_mc"), open: t("type_open"), matching: t("type_matching") }[q.type];
-  const typeBadge = { multiple_choice: "mc", open: "open", matching: "matching" }[q.type];
+function showTab(tab) { location.hash = `#/test/${S.testId}/${tab}`; }
+
+function shareUrl() { return `${location.origin}/t/${S.data.test.share_code}`; }
+
+function renderTest() {
+  const { test, questions } = S.data;
+  document.getElementById("test-title").textContent = test.title;
+  document.getElementById("test-meta").innerHTML =
+    `<span class="pill ${test.is_open ? "ok" : "off"}">${t(test.is_open ? "open" : "closed")}</span>
+     &nbsp;${questions.length} ${t("questions_n")} · ${escapeHtml(test.filename || "")}`;
+  document.getElementById("share-link").value = shareUrl();
+  document.getElementById("share-open").href = shareUrl();
+  document.getElementById("share-hint").textContent = questions.length ? t("share_hint") : t("share_need_questions");
+
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === S.tab));
+  document.querySelectorAll(".tab").forEach(el => el.classList.toggle("hidden", el.id !== "tab-" + S.tab));
+
+  if (S.tab === "questions") renderQuestionsTab();
+  if (S.tab === "settings") renderSettings();
+  if (S.tab === "results") loadResults();
+}
+
+async function copyLink(btn) {
+  const url = shareUrl();
+  try { await navigator.clipboard.writeText(url); }
+  catch { document.getElementById("share-link").select(); document.execCommand("copy"); }
+  btn.textContent = t("copied");
+  setTimeout(() => { btn.textContent = t("copy"); }, 1500);
+}
+
+// ---------- questions tab ----------
+
+function renderQuestionsTab() {
+  const { topics, questions } = S.data;
+  document.getElementById("topics-list").innerHTML = topics.map(tp => `
+    <div class="topic-row">
+      <div class="name">
+        <div>${escapeHtml(tp.name)}</div>
+        <div class="meta">${tp.questions_count} ${t("questions_n")}</div>
+      </div>
+      <button class="small ${tp.questions_count ? "" : "primary"}" id="gen-${tp.id}"
+        onclick="generateTopic(${tp.id})">${t(tp.questions_count ? "regenerate" : "generate")}</button>
+    </div>`).join("");
+
+  const box = document.getElementById("questions-list");
+  if (!questions.length) { box.innerHTML = `<div class="card muted">${t("no_questions")}</div>`; return; }
+
+  let html = "", lastTopic = null, n = 0;
+  for (const q of questions) {
+    if (q.topic_name !== lastTopic) {
+      html += `<div class="topic-label">${escapeHtml(q.topic_name)}</div>`;
+      lastTopic = q.topic_name;
+    }
+    n++;
+    html += S.editing === q.id ? renderEditor(q) : renderQuestionCard(q, n);
+  }
+  box.innerHTML = html;
+}
+
+function typePill(type) { return `<span class="pill type">${t("type_" + type)}</span>`; }
+
+function renderQuestionCard(q, n) {
   let body = "";
   if (q.type === "multiple_choice") {
-    body = `<div class="q-options">${q.options.map((opt, oi) => `
-      <label class="q-option">
-        <input type="radio" name="q${q.id}" value="${escapeAttr(opt)}" />
-        <span>${escapeHtml(opt)}</span>
-      </label>`).join("")}</div>`;
+    body = `<ul class="opt-list">${q.options.map(o =>
+      `<li class="${o === q.correct ? "correct" : ""}">${escapeHtml(o)}</li>`).join("")}</ul>`;
   } else if (q.type === "open") {
-    body = `<input type="text" name="q${q.id}" placeholder="…" />`;
+    body = `<ul class="opt-list"><li class="correct">${escapeHtml(q.correct)}</li></ul>`;
   } else if (q.type === "matching") {
-    const left = q.options.left || [];
-    const right = q.options.right || [];
-    const shuffled = [...right].sort(() => Math.random() - 0.5);
-    body = `<div class="matching-rows" data-qid="${q.id}">${left.map((lt, li) => `
-      <div class="matching-row">
-        <div class="term">${escapeHtml(lt)}</div>
-        <span>→</span>
-        <select data-term="${escapeAttr(lt)}">
-          <option value="">—</option>
-          ${shuffled.map(r => `<option value="${escapeAttr(r)}">${escapeHtml(r)}</option>`).join("")}
-        </select>
-      </div>`).join("")}</div>`;
+    body = `<ul class="opt-list">${Object.entries(q.correct).map(([k, v]) =>
+      `<li class="correct">${escapeHtml(k)} → ${escapeHtml(v)}</li>`).join("")}</ul>`;
   }
-  return `<div class="question-block">
-    <div class="q-label"><span class="badge ${typeBadge}">${typeLabel}</span>#${i+1}</div>
+  return `<div class="q-card">
+    <div class="q-head"><span class="meta">#${n}</span>${typePill(q.type)}<span class="spacer"></span>
+      <button class="small" onclick="startEdit(${q.id})">${t("edit")}</button>
+      <button class="small danger" onclick="deleteQuestion(${q.id})">${t("delete")}</button>
+    </div>
     <div class="q-text">${escapeHtml(q.question)}</div>
     ${body}
   </div>`;
 }
 
-function attachMatchingHandlers() {} // placeholder (uses selects directly)
-
-function collectAnswers() {
-  const answers = {};
-  STATE.currentQuestions.forEach(q => {
-    if (q.type === "multiple_choice") {
-      const el = document.querySelector(`input[name="q${q.id}"]:checked`);
-      answers[q.id] = el ? el.value : "";
-    } else if (q.type === "open") {
-      const el = document.querySelector(`input[name="q${q.id}"]`);
-      answers[q.id] = el ? el.value : "";
-    } else if (q.type === "matching") {
-      const box = document.querySelector(`.matching-rows[data-qid="${q.id}"]`);
-      const map = {};
-      box.querySelectorAll("select").forEach(s => { map[s.dataset.term] = s.value; });
-      answers[q.id] = map;
-    }
-  });
-  return answers;
+function renderEditor(q) {
+  let fields = "";
+  if (q.type === "multiple_choice") {
+    fields = `
+      <label class="field"><span>${t("options_one_per_line")}</span>
+        <textarea id="e-options" rows="4">${escapeHtml(q.options.join("\n"))}</textarea></label>
+      <label class="field"><span>${t("correct_answer")}</span>
+        <input type="text" id="e-correct" value="${escapeHtml(q.correct)}" /></label>`;
+  } else if (q.type === "open") {
+    fields = `<label class="field"><span>${t("correct_answer")}</span>
+      <input type="text" id="e-correct" value="${escapeHtml(q.correct)}" /></label>`;
+  } else {
+    const lines = Object.entries(q.correct).map(([k, v]) => `${k} = ${v}`).join("\n");
+    fields = `<label class="field"><span>${t("pairs_hint")}</span>
+      <textarea id="e-pairs" rows="5">${escapeHtml(lines)}</textarea></label>`;
+  }
+  return `<div class="q-card" style="border-color:var(--accent)">
+    <div class="q-head">${typePill(q.type)}</div>
+    <label class="field"><span>${t("question_text")}</span>
+      <textarea id="e-question" rows="3">${escapeHtml(q.question)}</textarea></label>
+    ${fields}
+    <div class="row end">
+      <span class="status err" id="e-status" style="margin:0"></span>
+      <button onclick="cancelEdit()">${t("cancel")}</button>
+      <button class="primary" onclick="saveEdit(${q.id})">${t("save")}</button>
+    </div>
+  </div>`;
 }
 
-async function submitQuiz() {
-  const name = document.getElementById("user-name").value.trim();
-  if (!name) { alert(t("enter_name")); return; }
-  localStorage.setItem("user_name", name);
-  try {
-    const res = await api("POST", `/api/topics/${STATE.currentTopicId}/submit`, {
-      user_name: name, answers: collectAnswers()
+function startEdit(id) { S.editing = id; renderQuestionsTab(); }
+function cancelEdit() { S.editing = null; renderQuestionsTab(); }
+
+async function saveEdit(id) {
+  const q = S.data.questions.find(x => x.id === id);
+  const body = { type: q.type, question: document.getElementById("e-question").value.trim() };
+  if (q.type === "multiple_choice") {
+    body.options = document.getElementById("e-options").value.split("\n").map(s => s.trim()).filter(Boolean);
+    body.correct = document.getElementById("e-correct").value.trim();
+  } else if (q.type === "open") {
+    body.correct = document.getElementById("e-correct").value.trim();
+  } else {
+    const pairs = {};
+    document.getElementById("e-pairs").value.split("\n").forEach(line => {
+      const i = line.indexOf("=");
+      if (i > 0) pairs[line.slice(0, i).trim()] = line.slice(i + 1).trim();
     });
-    showResult(res);
-  } catch (e) { alert(e.message); }
-}
-
-function showResult(res) {
-  show("view-result");
-  const pct = Math.round(res.score / res.total * 100);
-  document.getElementById("score-big").innerHTML =
-    `${res.score} / ${res.total} <span class="pct">(${pct}%)</span>`;
-  const d = document.getElementById("result-details");
-  d.innerHTML = res.details.map((r, i) => {
-    let user = r.user; let correct = r.correct;
-    if (typeof user === "object") user = JSON.stringify(user);
-    if (typeof correct === "object") correct = JSON.stringify(correct);
-    return `<div class="result-item ${r.ok ? "ok" : ""}">
-      <div class="q">#${i+1}. ${escapeHtml(r.question)}</div>
-      <div class="ua">${t("user")}: ${escapeHtml(user || "—")}</div>
-      ${!r.ok ? `<div class="ca">✓ ${escapeHtml(correct)}</div>` : ""}
-    </div>`;
-  }).join("");
-}
-
-function backToTest() { if (STATE.currentTestId) openTest(STATE.currentTestId); else goHome(); }
-
-async function showResults() {
-  show("view-results");
+    body.correct = pairs;
+    body.options = { left: Object.keys(pairs), right: Object.values(pairs) };
+  }
   try {
-    const results = await api("GET", `/api/tests/${STATE.currentTestId}/results`);
-    renderResultsTable(results);
-    renderCharts(results);
+    await api("PUT", `/api/questions/${id}`, body);
+    S.editing = null;
+    await reloadTest();
+  } catch (e) { document.getElementById("e-status").textContent = e.message; }
+}
+
+async function deleteQuestion(id) {
+  if (!confirm(t("confirm_delete_q"))) return;
+  try { await api("DELETE", `/api/questions/${id}`); await reloadTest(); }
+  catch (e) { alert(e.message); }
+}
+
+async function generateTopic(topicId, { silent = false } = {}) {
+  const topic = S.data.topics.find(x => x.id === topicId);
+  if (!silent && topic.questions_count && !confirm(t("confirm_regenerate"))) return;
+  const btn = document.getElementById("gen-" + topicId);
+  if (btn) { btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> ${t("generating")}`; }
+  try {
+    await api("POST", `/api/topics/${topicId}/generate`, { count: Number(document.getElementById("gen-count").value) });
+    await reloadTest();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = t("generate"); }
+    if (!silent) alert(e.message);
+    throw e;
+  }
+}
+
+async function generateAll() {
+  const btn = document.getElementById("gen-all-btn");
+  btn.disabled = true;
+  const todo = S.data.topics.filter(tp => !tp.questions_count);
+  const targets = todo.length ? todo : S.data.topics;
+  if (!todo.length && !confirm(t("confirm_regenerate"))) { btn.disabled = false; return; }
+  let failed = 0;
+  for (const tp of targets) {
+    try { await generateTopic(tp.id, { silent: true }); } catch { failed++; }
+  }
+  btn.disabled = false;
+  if (failed) alert(`${t("err_ai_empty")} (${failed})`);
+}
+
+// ---------- settings tab ----------
+
+function renderSettings() {
+  const x = S.data.test;
+  document.getElementById("s-title").value = x.title;
+  document.getElementById("s-open").checked = !!x.is_open;
+  document.getElementById("s-time").value = x.time_limit;
+  document.getElementById("s-limit").value = x.question_limit;
+  document.getElementById("s-shuffle").checked = !!x.shuffle;
+  document.getElementById("s-show").checked = !!x.show_answers;
+  document.getElementById("settings-status").textContent = "";
+}
+
+async function saveSettings(e) {
+  e.preventDefault();
+  const status = document.getElementById("settings-status");
+  try {
+    await api("PATCH", `/api/tests/${S.testId}`, {
+      title: document.getElementById("s-title").value.trim(),
+      is_open: document.getElementById("s-open").checked,
+      time_limit: Number(document.getElementById("s-time").value) || 0,
+      question_limit: Number(document.getElementById("s-limit").value) || 0,
+      shuffle: document.getElementById("s-shuffle").checked,
+      show_answers: document.getElementById("s-show").checked,
+    });
+    await reloadTest();
+    status.className = "status ok"; status.textContent = t("saved");
+  } catch (err) { status.className = "status err"; status.textContent = err.message; }
+}
+
+async function download(kind) {
+  try {
+    const r = await api("GET", `/api/tests/${S.testId}/export/${kind}`, null, { raw: true });
+    const blob = await r.blob();
+    const cd = r.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename\*=UTF-8''(.+)$/);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = m ? decodeURIComponent(m[1]) : `export-${kind}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   } catch (e) { alert(e.message); }
-}
-
-function renderResultsTable(results) {
-  const tbl = document.getElementById("results-table");
-  if (!results.length) { tbl.innerHTML = `<tr><td>${t("no_results")}</td></tr>`; return; }
-  tbl.innerHTML = `<thead><tr>
-    <th>${t("user")}</th><th>${t("topic")}</th><th>${t("score")}</th><th>%</th><th>${t("date")}</th>
-  </tr></thead><tbody>${results.map(r => {
-    const pct = Math.round(r.score / r.total * 100);
-    return `<tr>
-      <td>${escapeHtml(r.user_name)}</td>
-      <td>${escapeHtml(r.topic_name || "—")}</td>
-      <td>${r.score}/${r.total}</td>
-      <td>${pct}%</td>
-      <td>${new Date(r.taken_at).toLocaleString()}</td>
-    </tr>`;
-  }).join("")}</tbody>`;
-}
-
-let CHARTS = {};
-function renderCharts(results) {
-  Object.values(CHARTS).forEach(c => c && c.destroy());
-  CHARTS = {};
-
-  const byUser = {};
-  results.forEach(r => {
-    const pct = Math.round(r.score / r.total * 100);
-    if (!byUser[r.user_name]) byUser[r.user_name] = [];
-    byUser[r.user_name].push(pct);
-  });
-  const userAvg = Object.entries(byUser).map(([u, arr]) => ({
-    u, avg: Math.round(arr.reduce((a, b) => a + b, 0) / arr.length)
-  })).sort((a, b) => b.avg - a.avg).slice(0, 10);
-
-  CHARTS.scores = new Chart(document.getElementById("chart-scores"), {
-    type: "bar",
-    data: {
-      labels: userAvg.map(x => x.u),
-      datasets: [{
-        label: t("score") + " (%)",
-        data: userAvg.map(x => x.avg),
-        backgroundColor: "#7aa2f7",
-      }],
-    },
-    options: {
-      plugins: { title: { display: true, text: "Топ участников", color: "#e6edf3" }, legend: { labels: { color: "#e6edf3" } } },
-      scales: { y: { beginAtZero: true, max: 100, ticks: { color: "#8b949e" }, grid: { color: "#2a303a" } },
-                x: { ticks: { color: "#8b949e" }, grid: { color: "#2a303a" } } },
-    },
-  });
-
-  const byTopic = {};
-  results.forEach(r => {
-    const name = r.topic_name || "—";
-    if (!byTopic[name]) byTopic[name] = [];
-    byTopic[name].push(r.score / r.total * 100);
-  });
-  const topicAvg = Object.entries(byTopic).map(([n, arr]) => ({
-    n, avg: Math.round(arr.reduce((a, b) => a + b, 0) / arr.length)
-  }));
-
-  CHARTS.topics = new Chart(document.getElementById("chart-topics"), {
-    type: "doughnut",
-    data: {
-      labels: topicAvg.map(x => x.n.slice(0, 30)),
-      datasets: [{
-        data: topicAvg.map(x => x.avg),
-        backgroundColor: ["#7aa2f7","#bb9af7","#9ece6a","#e0af68","#f7768e","#7dcfff","#c0caf5"],
-      }],
-    },
-    options: { plugins: { title: { display: true, text: "Средний % по темам", color: "#e6edf3" }, legend: { labels: { color: "#e6edf3" } } } },
-  });
 }
 
 async function deleteTest() {
   if (!confirm(t("confirm_delete"))) return;
+  try { await api("DELETE", `/api/tests/${S.testId}`); S.testId = null; S.data = null; goHome(); }
+  catch (e) { alert(e.message); }
+}
+
+// ---------- results tab ----------
+
+async function loadResults() {
+  const box = document.getElementById("results-body");
+  box.innerHTML = `<div class="status"><span class="spinner"></span></div>`;
   try {
-    await api("DELETE", `/api/tests/${STATE.currentTestId}`);
-    goHome();
+    S.results = await api("GET", `/api/tests/${S.testId}/results`);
+    renderResults();
+  } catch (e) { box.innerHTML = `<div class="status err">${escapeHtml(e.message)}</div>`; }
+}
+
+const GRADE_ORDER = ["A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "F"];
+
+function gradeFromPercent(p) {
+  const cut = [95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 0];
+  return GRADE_ORDER[cut.findIndex(c => p >= c)];
+}
+
+function renderResults() {
+  CHARTS.forEach(c => c.destroy()); CHARTS = [];
+  const box = document.getElementById("results-body");
+  const { attempts, question_stats } = S.results;
+  if (!attempts.length) { box.innerHTML = `<div class="card muted">${t("no_results")}</div>`; return; }
+
+  const avg = attempts.reduce((s, a) => s + a.percent, 0) / attempts.length;
+  const avgGrade = gradeFromPercent(avg);
+  box.innerHTML = `
+    <div class="stats">
+      <div class="stat"><div class="v">${attempts.length}</div><div class="l">${t("stat_attempts")}</div></div>
+      <div class="stat"><div class="v">${Math.round(avg)}%</div><div class="l">${t("stat_avg")}</div></div>
+      <div class="stat"><div class="v">${avgGrade}</div><div class="l">${t("stat_avg_grade")} · ${gradeText(avgGrade)}</div></div>
+    </div>
+    <div class="charts">
+      <div class="card"><h3>${t("chart_grades")}</h3><div class="chart-box"><canvas id="chart-grades"></canvas></div></div>
+      <div class="card"><h3>${t("chart_hard")}</h3><div class="chart-box"><canvas id="chart-hard"></canvas></div></div>
+    </div>
+    <div class="card table-wrap">
+      <table>
+        <thead><tr><th>${t("col_name")}</th><th>${t("col_group")}</th><th>${t("col_score")}</th><th>%</th>
+          <th>${t("col_grade")}</th><th>${t("col_time")}</th><th>${t("col_date")}</th><th></th></tr></thead>
+        <tbody>${attempts.map(a => `<tr>
+          <td>${escapeHtml(a.student_name)}</td>
+          <td>${escapeHtml(a.student_group || "—")}</td>
+          <td>${a.score}/${a.total}</td>
+          <td>${Math.round(a.percent)}%</td>
+          <td><span class="grade g-${a.grade[0]}">${a.grade}</span></td>
+          <td>${fmtDuration(a.duration_sec)}</td>
+          <td>${new Date(a.taken_at).toLocaleString()}</td>
+          <td><button class="small" onclick="viewAttempt(${a.id})">${t("view")}</button>
+              <button class="small danger" onclick="deleteAttempt(${a.id})">×</button></td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>`;
+  if (window.Chart) drawCharts(attempts, question_stats);
+}
+
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function drawCharts(attempts, stats) {
+  const accent = cssVar("--accent"), muted = cssVar("--muted"), grid = cssVar("--border");
+  const axis = { ticks: { color: muted }, grid: { color: grid }, border: { display: false } };
+  const base = { maintainAspectRatio: false, plugins: { legend: { display: false } } };
+
+  const counts = GRADE_ORDER.map(g => attempts.filter(a => a.grade === g).length);
+  CHARTS.push(new Chart(document.getElementById("chart-grades"), {
+    type: "bar",
+    data: { labels: GRADE_ORDER, datasets: [{ label: t("students"), data: counts, backgroundColor: accent,
+      borderRadius: 4, maxBarThickness: 28 }] },
+    options: { ...base, scales: { x: { ...axis, grid: { display: false } },
+      y: { ...axis, beginAtZero: true, ticks: { color: muted, precision: 0 } } } },
+  }));
+
+  const hard = stats.slice(0, 8);
+  CHARTS.push(new Chart(document.getElementById("chart-hard"), {
+    type: "bar",
+    data: { labels: hard.map(s => s.question.length > 26 ? s.question.slice(0, 26) + "…" : s.question),
+      datasets: [{ label: "%", data: hard.map(s => s.percent), backgroundColor: accent,
+        borderRadius: 4, maxBarThickness: 18 }] },
+    options: { ...base, indexAxis: "y",
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { title: items => hard[items[0].dataIndex].question, label: c => ` ${c.parsed.x}%` } } },
+      scales: { x: { ...axis, min: 0, max: 100 }, y: { ...axis, grid: { display: false } } } },
+  }));
+}
+
+async function viewAttempt(id) {
+  try {
+    const a = await api("GET", `/api/attempts/${id}`);
+    const items = a.details.map((d, i) => {
+      const cls = d.points >= 1 ? "ok" : d.points > 0 ? "part" : "";
+      return `<div class="review-item ${cls}">
+        <div><strong>${i + 1}.</strong> ${escapeHtml(d.question)}</div>
+        <div class="ua">${t("your_answer")}: ${escapeHtml(formatAnswer(d.user))}</div>
+        ${d.points < 1 ? `<div class="ca">✓ ${escapeHtml(formatAnswer(d.correct))}</div>` : ""}
+      </div>`;
+    }).join("");
+    openModal(`
+      <div class="row"><h2 style="margin:0">${escapeHtml(a.student_name)}</h2><span class="spacer"></span>
+        <button class="small" onclick="closeModal()">✕</button></div>
+      <p class="meta">${escapeHtml(a.student_group || "")} · ${a.score}/${a.total} · ${Math.round(a.percent)}% ·
+        <span class="grade g-${a.grade[0]}">${a.grade}</span> (${gradeText(a.grade)})</p>
+      ${items}`);
   } catch (e) { alert(e.message); }
 }
 
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[m]));
+async function deleteAttempt(id) {
+  if (!confirm(t("confirm_delete_attempt"))) return;
+  try { await api("DELETE", `/api/attempts/${id}`); loadResults(); }
+  catch (e) { alert(e.message); }
 }
-function escapeAttr(s) { return escapeHtml(s).replace(/"/g, "&quot;"); }
+
+function openModal(html) {
+  document.getElementById("modal-root").innerHTML =
+    `<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal">${html}</div></div>`;
+}
+function closeModal() { document.getElementById("modal-root").innerHTML = ""; }
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
 
 applyI18n();
-loadTests();
+route();

@@ -1,21 +1,19 @@
 import json
 import os
-import shutil
+import random
+import secrets
+import tempfile
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-
-from . import db, parser, ai, scoring
+from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).parent.parent
-UPLOADS = ROOT / "uploads"
 FRONTEND = ROOT / "frontend"
-UPLOADS.mkdir(exist_ok=True)
 
 if (ROOT / ".env").exists():
     for line in (ROOT / ".env").read_text().splitlines():
@@ -24,232 +22,463 @@ if (ROOT / ".env").exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
+from . import ai, auth, db, export, parser, scoring  # noqa: E402  (needs .env loaded first)
+
+MAX_UPLOAD_MB = 20
+QUESTION_TYPES = {"multiple_choice", "open", "matching"}
+
 db.init_db()
-
 app = FastAPI(title="TestGen")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+
+# ---------- helpers ----------
+
+def _load_question(row: dict) -> dict:
+    q = dict(row)
+    if q.get("options"):
+        try:
+            q["options"] = json.loads(q["options"])
+        except Exception:
+            pass
+    if q["type"] == "matching":
+        try:
+            q["correct"] = json.loads(q["correct"])
+        except Exception:
+            pass
+    return q
+
+
+def _dump_correct(correct) -> str:
+    return correct if isinstance(correct, str) else json.dumps(correct, ensure_ascii=False)
+
+
+def _dump_options(options) -> Optional[str]:
+    return None if options is None else json.dumps(options, ensure_ascii=False)
+
+
+def _own_test(c: db.Conn, test_id: int, user: dict) -> dict:
+    test = c.one("SELECT * FROM tests WHERE id = ? AND owner_id = ?", (test_id, user["id"]))
+    if not test:
+        raise HTTPException(404, "test_not_found")
+    return test
+
+
+def _test_questions(c: db.Conn, test_id: int) -> list[dict]:
+    rows = c.all(
+        """SELECT q.*, tp.name AS topic_name FROM questions q JOIN topics tp ON tp.id = q.topic_id
+           WHERE tp.test_id = ? ORDER BY tp.idx, q.id""",
+        (test_id,),
+    )
+    return [_load_question(r) for r in rows]
+
+
+def _new_share_code(c: db.Conn) -> str:
+    alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+    while True:
+        code = "".join(secrets.choice(alphabet) for _ in range(8))
+        if not c.one("SELECT id FROM tests WHERE share_code = ?", (code,)):
+            return code
+
+
+def _download(content, filename: str, media_type: str) -> Response:
+    return Response(
+        content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+# ---------- auth ----------
+
+class Credentials(BaseModel):
+    username: str = Field(min_length=3, max_length=40)
+    password: str = Field(min_length=6, max_length=100)
+
+
+@app.post("/api/auth/register")
+def register(body: Credentials):
+    username = body.username.strip().lower()
+    with db.get_conn() as c:
+        if c.one("SELECT id FROM users WHERE username = ?", (username,)):
+            raise HTTPException(400, "username_taken")
+        user_id = c.insert(
+            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+            (username, auth.hash_password(body.password), db.now()),
+        )
+    return {"token": auth.create_session(user_id), "username": username}
+
+
+@app.post("/api/auth/login")
+def login(body: Credentials):
+    username = body.username.strip().lower()
+    with db.get_conn() as c:
+        user = c.one("SELECT * FROM users WHERE username = ?", (username,))
+    if not user or not auth.verify_password(body.password, user["password_hash"]):
+        raise HTTPException(401, "bad_credentials")
+    return {"token": auth.create_session(user["id"]), "username": username}
+
+
+@app.get("/api/auth/me")
+def me(user: dict = Depends(auth.current_user)):
+    return {"username": user["username"]}
+
+
+@app.post("/api/auth/logout")
+def logout(user: dict = Depends(auth.current_user)):
+    auth.delete_session(user["token"])
+    return {"ok": True}
+
+
+# ---------- teacher: tests ----------
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...), language: str = Form("kz"), title: Optional[str] = Form(None)):
+async def upload(
+    file: UploadFile = File(...),
+    language: str = Form("kz"),
+    title: Optional[str] = Form(None),
+    user: dict = Depends(auth.current_user),
+):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in (".docx", ".pdf", ".txt", ".md"):
-        raise HTTPException(400, "Поддерживаются только .docx, .pdf, .txt, .md")
+        raise HTTPException(400, "bad_file_type")
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, "file_too_large")
 
-    dest = UPLOADS / file.filename
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    try:
-        text = parser.extract_text(dest)
-    except Exception as e:
-        raise HTTPException(400, f"Не удалось извлечь текст: {e}")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / f"upload{suffix}"
+        path.write_bytes(data)
+        try:
+            text = parser.extract_text(path)
+        except Exception:
+            raise HTTPException(400, "cannot_read_file")
 
     if len(text.strip()) < 200:
-        raise HTTPException(400, "Слишком мало текста в файле")
+        raise HTTPException(400, "too_little_text")
 
     topics = parser.split_topics(text)
-    display_title = title or Path(file.filename).stem
+    display_title = (title or "").strip() or Path(file.filename).stem
+    lang = language if language in ("kz", "ru", "en") else "kz"
 
     with db.get_conn() as c:
-        cur = c.execute(
-            "INSERT INTO tests (title, filename, source_text, language) VALUES (?, ?, ?, ?)",
-            (display_title, file.filename, text, language),
+        test_id = c.insert(
+            """INSERT INTO tests (owner_id, title, filename, source_text, language, share_code, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (user["id"], display_title[:200], file.filename, text, lang, _new_share_code(c), db.now()),
         )
-        test_id = cur.lastrowid
         for i, t in enumerate(topics):
             c.execute(
-                "INSERT INTO topics (test_id, name, idx) VALUES (?, ?, ?)",
-                (test_id, t["name"], i),
+                "INSERT INTO topics (test_id, name, idx, content) VALUES (?, ?, ?, ?)",
+                (test_id, t["name"], i, t["content"]),
             )
 
-    return {"test_id": test_id, "title": display_title, "topics_count": len(topics), "language": language}
+    return {"test_id": test_id, "title": display_title, "topics_count": len(topics)}
 
 
 @app.get("/api/tests")
-def list_tests():
+def list_tests(user: dict = Depends(auth.current_user)):
     with db.get_conn() as c:
-        rows = c.execute(
-            """SELECT t.id, t.title, t.language, t.created_at,
-                      (SELECT COUNT(*) FROM topics WHERE test_id = t.id) AS topics_count,
+        return c.all(
+            """SELECT t.id, t.title, t.language, t.created_at, t.is_open, t.share_code,
+                      (SELECT COUNT(*) FROM questions q JOIN topics tp ON tp.id = q.topic_id
+                        WHERE tp.test_id = t.id) AS questions_count,
                       (SELECT COUNT(*) FROM attempts WHERE test_id = t.id) AS attempts_count
-               FROM tests t ORDER BY t.created_at DESC"""
-        ).fetchall()
-    return [dict(r) for r in rows]
+               FROM tests t WHERE t.owner_id = ? ORDER BY t.id DESC""",
+            (user["id"],),
+        )
 
 
 @app.get("/api/tests/{test_id}")
-def get_test(test_id: int):
+def get_test(test_id: int, user: dict = Depends(auth.current_user)):
     with db.get_conn() as c:
-        test = c.execute("SELECT * FROM tests WHERE id = ?", (test_id,)).fetchone()
-        if not test:
-            raise HTTPException(404, "Тест не найден")
-        topics = c.execute(
+        test = _own_test(c, test_id, user)
+        topics = c.all(
             """SELECT tp.id, tp.name, tp.idx,
                       (SELECT COUNT(*) FROM questions WHERE topic_id = tp.id) AS questions_count
                FROM topics tp WHERE tp.test_id = ? ORDER BY tp.idx""",
             (test_id,),
-        ).fetchall()
-    return {"test": dict(test), "topics": [dict(t) for t in topics]}
-
-
-class GenerateReq(BaseModel):
-    count: int = 15
-
-
-@app.post("/api/topics/{topic_id}/generate")
-def generate_for_topic(topic_id: int, body: GenerateReq):
-    with db.get_conn() as c:
-        topic = c.execute("SELECT * FROM topics WHERE id = ?", (topic_id,)).fetchone()
-        if not topic:
-            raise HTTPException(404, "Тема не найдена")
-        test = c.execute("SELECT * FROM tests WHERE id = ?", (topic["test_id"],)).fetchone()
-        existing = c.execute("SELECT COUNT(*) AS n FROM questions WHERE topic_id = ?", (topic_id,)).fetchone()
-        if existing["n"] > 0:
-            c.execute("DELETE FROM questions WHERE topic_id = ?", (topic_id,))
-
-    all_topics = parser.split_topics(test["source_text"])
-    content = ""
-    for t in all_topics:
-        if t["name"] == topic["name"]:
-            content = t["content"]
-            break
-    if not content:
-        content = test["source_text"][:8000]
-
-    try:
-        questions = ai.generate_questions(topic["name"], content, lang=test["language"], count=body.count)
-    except Exception as e:
-        raise HTTPException(500, f"Ошибка генерации AI: {e}")
-
-    if not questions:
-        raise HTTPException(500, "AI не сгенерировал ни одного вопроса")
-
-    with db.get_conn() as c:
-        for q in questions:
-            c.execute(
-                "INSERT INTO questions (topic_id, type, question, options, correct) VALUES (?, ?, ?, ?, ?)",
-                (
-                    topic_id,
-                    q["type"],
-                    q["question"],
-                    json.dumps(q["options"], ensure_ascii=False) if q["options"] is not None else None,
-                    json.dumps(q["correct"], ensure_ascii=False) if not isinstance(q["correct"], str) else q["correct"],
-                ),
-            )
-
-    return {"generated": len(questions)}
-
-
-@app.get("/api/topics/{topic_id}/questions")
-def get_questions(topic_id: int, with_answers: bool = False):
-    with db.get_conn() as c:
-        rows = c.execute("SELECT * FROM questions WHERE topic_id = ? ORDER BY id", (topic_id,)).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        if d["options"]:
-            try:
-                d["options"] = json.loads(d["options"])
-            except Exception:
-                pass
-        if d["type"] == "matching":
-            try:
-                d["correct"] = json.loads(d["correct"])
-            except Exception:
-                pass
-        if not with_answers:
-            d.pop("correct", None)
-        out.append(d)
-    return out
-
-
-class SubmitReq(BaseModel):
-    user_name: str
-    answers: dict  # {question_id: answer}
-
-
-@app.post("/api/topics/{topic_id}/submit")
-def submit(topic_id: int, body: SubmitReq):
-    name = body.user_name.strip()[:60]
-    if not name:
-        raise HTTPException(400, "Введите имя")
-
-    with db.get_conn() as c:
-        topic = c.execute("SELECT * FROM topics WHERE id = ?", (topic_id,)).fetchone()
-        if not topic:
-            raise HTTPException(404, "Тема не найдена")
-        questions = c.execute("SELECT * FROM questions WHERE topic_id = ?", (topic_id,)).fetchall()
-
-    score = 0
-    details = []
-    for q in questions:
-        qd = dict(q)
-        if qd["options"]:
-            try:
-                qd["options"] = json.loads(qd["options"])
-            except Exception:
-                pass
-        if qd["type"] == "matching":
-            try:
-                qd["correct"] = json.loads(qd["correct"])
-            except Exception:
-                pass
-        user_ans = body.answers.get(str(qd["id"])) or body.answers.get(qd["id"])
-        ok = scoring.check_answer(qd, user_ans)
-        if ok:
-            score += 1
-        details.append({
-            "id": qd["id"],
-            "type": qd["type"],
-            "question": qd["question"],
-            "user": user_ans,
-            "correct": qd["correct"],
-            "ok": ok,
-        })
-
-    total = len(questions)
-    with db.get_conn() as c:
-        cur = c.execute(
-            "INSERT INTO attempts (test_id, topic_id, user_name, score, total, details) VALUES (?, ?, ?, ?, ?, ?)",
-            (topic["test_id"], topic_id, name, score, total, json.dumps(details, ensure_ascii=False)),
         )
-        attempt_id = cur.lastrowid
+        questions = _test_questions(c, test_id)
+    test.pop("source_text", None)
+    return {"test": test, "topics": topics, "questions": questions}
 
-    return {"attempt_id": attempt_id, "score": score, "total": total, "details": details}
+
+class TestSettings(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    is_open: Optional[bool] = None
+    time_limit: Optional[int] = Field(None, ge=0, le=600)
+    question_limit: Optional[int] = Field(None, ge=0, le=500)
+    shuffle: Optional[bool] = None
+    show_answers: Optional[bool] = None
 
 
-@app.get("/api/tests/{test_id}/results")
-def results(test_id: int):
+@app.patch("/api/tests/{test_id}")
+def update_test(test_id: int, body: TestSettings, user: dict = Depends(auth.current_user)):
+    changes = body.model_dump(exclude_none=True)
     with db.get_conn() as c:
-        attempts = c.execute(
-            """SELECT a.*, tp.name AS topic_name
-               FROM attempts a LEFT JOIN topics tp ON a.topic_id = tp.id
-               WHERE a.test_id = ? ORDER BY a.taken_at DESC""",
-            (test_id,),
-        ).fetchall()
-    return [{k: v for k, v in dict(r).items() if k != "details"} for r in attempts]
-
-
-@app.get("/api/attempts/{attempt_id}")
-def get_attempt(attempt_id: int):
-    with db.get_conn() as c:
-        row = c.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
-    if not row:
-        raise HTTPException(404, "Попытка не найдена")
-    d = dict(row)
-    try:
-        d["details"] = json.loads(d["details"])
-    except Exception:
-        d["details"] = []
-    return d
+        _own_test(c, test_id, user)
+        for key, value in changes.items():  # keys come from the pydantic model, not the user
+            c.execute(f"UPDATE tests SET {key} = ? WHERE id = ?",
+                      (int(value) if isinstance(value, bool) else value, test_id))
+    return {"ok": True}
 
 
 @app.delete("/api/tests/{test_id}")
-def delete_test(test_id: int):
+def delete_test(test_id: int, user: dict = Depends(auth.current_user)):
     with db.get_conn() as c:
+        _own_test(c, test_id, user)
         c.execute("DELETE FROM tests WHERE id = ?", (test_id,))
     return {"ok": True}
+
+
+# ---------- teacher: questions ----------
+
+class GenerateReq(BaseModel):
+    count: int = Field(15, ge=3, le=30)
+
+
+@app.post("/api/topics/{topic_id}/generate")
+def generate_for_topic(topic_id: int, body: GenerateReq, user: dict = Depends(auth.current_user)):
+    with db.get_conn() as c:
+        topic = c.one("SELECT * FROM topics WHERE id = ?", (topic_id,))
+        if not topic:
+            raise HTTPException(404, "topic_not_found")
+        test = _own_test(c, topic["test_id"], user)
+
+    content = topic.get("content") or test["source_text"][:8000]
+    try:
+        questions = ai.generate_questions(topic["name"], content, lang=test["language"], count=body.count)
+    except Exception as e:
+        raise HTTPException(502, f"ai_error: {e}")
+    if not questions:
+        raise HTTPException(502, "ai_empty")
+
+    with db.get_conn() as c:
+        c.execute("DELETE FROM questions WHERE topic_id = ?", (topic_id,))
+        for q in questions:
+            c.execute(
+                "INSERT INTO questions (topic_id, type, question, options, correct) VALUES (?, ?, ?, ?, ?)",
+                (topic_id, q["type"], q["question"], _dump_options(q["options"]), _dump_correct(q["correct"])),
+            )
+    return {"generated": len(questions)}
+
+
+class QuestionEdit(BaseModel):
+    type: str
+    question: str = Field(min_length=1, max_length=2000)
+    options: Optional[object] = None
+    correct: object
+
+
+def _owned_question(c: db.Conn, question_id: int, user: dict) -> dict:
+    q = c.one(
+        """SELECT q.* FROM questions q JOIN topics tp ON tp.id = q.topic_id
+           JOIN tests t ON t.id = tp.test_id WHERE q.id = ? AND t.owner_id = ?""",
+        (question_id, user["id"]),
+    )
+    if not q:
+        raise HTTPException(404, "question_not_found")
+    return q
+
+
+@app.put("/api/questions/{question_id}")
+def edit_question(question_id: int, body: QuestionEdit, user: dict = Depends(auth.current_user)):
+    cleaned = ai.clean_questions([body.model_dump()])
+    if not cleaned:
+        raise HTTPException(400, "invalid_question")
+    q = cleaned[0]
+    with db.get_conn() as c:
+        _owned_question(c, question_id, user)
+        c.execute(
+            "UPDATE questions SET type = ?, question = ?, options = ?, correct = ? WHERE id = ?",
+            (q["type"], q["question"], _dump_options(q["options"]), _dump_correct(q["correct"]), question_id),
+        )
+    return {"ok": True}
+
+
+@app.delete("/api/questions/{question_id}")
+def delete_question(question_id: int, user: dict = Depends(auth.current_user)):
+    with db.get_conn() as c:
+        _owned_question(c, question_id, user)
+        c.execute("DELETE FROM questions WHERE id = ?", (question_id,))
+    return {"ok": True}
+
+
+# ---------- teacher: results ----------
+
+@app.get("/api/tests/{test_id}/results")
+def results(test_id: int, user: dict = Depends(auth.current_user)):
+    with db.get_conn() as c:
+        _own_test(c, test_id, user)
+        attempts = c.all("SELECT * FROM attempts WHERE test_id = ? ORDER BY id DESC", (test_id,))
+
+    per_question: dict[int, dict] = {}
+    for a in attempts:
+        for d in json.loads(a.pop("details") or "[]"):
+            s = per_question.setdefault(d["id"], {"id": d["id"], "question": d["question"], "points": 0, "n": 0})
+            s["points"] += d["points"]
+            s["n"] += 1
+    question_stats = sorted(
+        ({"id": s["id"], "question": s["question"], "percent": round(s["points"] / s["n"] * 100)}
+         for s in per_question.values()),
+        key=lambda s: s["percent"],
+    )
+    for a in attempts:
+        a["grade_info"] = scoring.grade(a["percent"])
+    return {"attempts": attempts, "question_stats": question_stats}
+
+
+@app.get("/api/attempts/{attempt_id}")
+def get_attempt(attempt_id: int, user: dict = Depends(auth.current_user)):
+    with db.get_conn() as c:
+        a = c.one(
+            """SELECT a.* FROM attempts a JOIN tests t ON t.id = a.test_id
+               WHERE a.id = ? AND t.owner_id = ?""",
+            (attempt_id, user["id"]),
+        )
+    if not a:
+        raise HTTPException(404, "attempt_not_found")
+    a["details"] = json.loads(a["details"] or "[]")
+    a["grade_info"] = scoring.grade(a["percent"])
+    return a
+
+
+@app.delete("/api/attempts/{attempt_id}")
+def delete_attempt(attempt_id: int, user: dict = Depends(auth.current_user)):
+    with db.get_conn() as c:
+        a = c.one(
+            "SELECT a.id FROM attempts a JOIN tests t ON t.id = a.test_id WHERE a.id = ? AND t.owner_id = ?",
+            (attempt_id, user["id"]),
+        )
+        if not a:
+            raise HTTPException(404, "attempt_not_found")
+        c.execute("DELETE FROM attempts WHERE id = ?", (attempt_id,))
+    return {"ok": True}
+
+
+@app.get("/api/tests/{test_id}/export/{kind}")
+def export_test(test_id: int, kind: str, user: dict = Depends(auth.current_user)):
+    with db.get_conn() as c:
+        test = _own_test(c, test_id, user)
+        questions = _test_questions(c, test_id)
+        attempts = c.all("SELECT * FROM attempts WHERE test_id = ? ORDER BY student_group, student_name",
+                         (test_id,)) if kind == "results" else []
+    name = test["title"]
+    if kind == "moodle":
+        return _download(export.moodle_xml(name, questions), f"{name} - Moodle.xml", "application/xml")
+    if kind == "platonus":
+        return _download(export.platonus_txt(questions), f"{name} - Platonus.txt", "text/plain; charset=utf-8")
+    if kind == "results":
+        return _download(
+            export.results_xlsx(name, attempts), f"{name} - нәтижелер.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    raise HTTPException(404, "unknown_export")
+
+
+# ---------- students (public, by share link) ----------
+
+def _public_test(c: db.Conn, code: str) -> dict:
+    test = c.one("SELECT * FROM tests WHERE share_code = ?", (code,))
+    if not test:
+        raise HTTPException(404, "test_not_found")
+    return test
+
+
+@app.get("/api/public/{code}")
+def public_test(code: str):
+    with db.get_conn() as c:
+        test = _public_test(c, code)
+        questions = _test_questions(c, test["id"]) if test["is_open"] else []
+
+    if test["shuffle"]:
+        random.shuffle(questions)
+    if test["question_limit"] and test["question_limit"] < len(questions):
+        questions = random.sample(questions, test["question_limit"]) if test["shuffle"] \
+            else questions[: test["question_limit"]]
+
+    public = []
+    for q in questions:
+        options = q["options"]
+        if q["type"] == "multiple_choice" and test["shuffle"]:
+            options = random.sample(options, len(options))
+        if q["type"] == "matching":
+            options = {"left": options["left"], "right": random.sample(options["right"], len(options["right"]))}
+        public.append({"id": q["id"], "type": q["type"], "question": q["question"], "options": options})
+
+    return {
+        "title": test["title"],
+        "language": test["language"],
+        "is_open": bool(test["is_open"]),
+        "time_limit": test["time_limit"],
+        "questions": public,
+    }
+
+
+class SubmitReq(BaseModel):
+    student_name: str = Field(min_length=2, max_length=80)
+    student_group: str = Field("", max_length=40)
+    answers: dict  # {question_id: answer}
+    duration_sec: Optional[int] = Field(None, ge=0)
+
+
+@app.post("/api/public/{code}/submit")
+def submit(code: str, body: SubmitReq):
+    with db.get_conn() as c:
+        test = _public_test(c, code)
+        if not test["is_open"]:
+            raise HTTPException(403, "test_closed")
+        questions = _test_questions(c, test["id"])
+
+    if test["question_limit"] and test["question_limit"] < len(questions):
+        # Only the questions this student was given count; the total stays fixed so
+        # skipping questions cannot raise the percentage.
+        total = test["question_limit"]
+        questions = [q for q in questions if str(q["id"]) in body.answers][:total]
+    else:
+        total = len(questions)
+    if total == 0:
+        raise HTTPException(400, "no_questions")
+
+    score = 0.0
+    details = []
+    for q in questions:
+        user_ans = body.answers.get(str(q["id"]))
+        points = scoring.check_answer(q, user_ans)
+        score += points
+        details.append({
+            "id": q["id"], "type": q["type"], "question": q["question"],
+            "user": user_ans, "correct": q["correct"], "points": points,
+        })
+
+    score = round(score, 2)
+    percent = round(score / total * 100, 1)
+    g = scoring.grade(percent)
+    with db.get_conn() as c:
+        c.insert(
+            """INSERT INTO attempts (test_id, student_name, student_group, score, total, percent, grade,
+                                     details, duration_sec, taken_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (test["id"], body.student_name.strip(), body.student_group.strip(), score, total, percent,
+             g["letter"], json.dumps(details, ensure_ascii=False), body.duration_sec, db.now()),
+        )
+
+    return {
+        "score": score, "total": total, "percent": percent, "grade": g,
+        "details": details if test["show_answers"] else None,
+    }
+
+
+# ---------- pages ----------
+
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
+
+@app.get("/t/{code}")
+def take_page(code: str):
+    return FileResponse(FRONTEND / "take.html")
 
 
 app.mount("/", StaticFiles(directory=str(FRONTEND), html=True), name="frontend")

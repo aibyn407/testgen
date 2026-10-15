@@ -91,25 +91,47 @@ def generate_questions(topic_name: str, content: str, lang: str = "kz", count: i
             system_instruction=SYSTEM_PROMPT,
             temperature=0.4,
             max_output_tokens=8000,
+            response_mime_type="application/json",
         ),
     )
 
     raw = response.text or ""
     questions = _extract_json(raw)
 
+    return clean_questions(questions)
+
+
+def clean_questions(questions) -> list[dict]:
+    """Drops malformed questions the model sometimes returns."""
     cleaned = []
-    for q in questions:
+    for q in questions if isinstance(questions, list) else []:
         if not isinstance(q, dict):
             continue
         qt = q.get("type")
-        if qt not in {"multiple_choice", "open", "matching"}:
+        text = str(q.get("question") or "").strip()
+        options = q.get("options")
+        correct = q.get("correct")
+        if not text or correct in (None, ""):
             continue
-        if not q.get("question") or q.get("correct") in (None, ""):
+        if qt == "multiple_choice":
+            if not isinstance(options, list) or len(options) < 2:
+                continue
+            options = [str(o).strip() for o in options]
+            correct = str(correct).strip()
+            if correct not in options:
+                continue
+        elif qt == "open":
+            options = None
+            correct = str(correct).strip()
+        elif qt == "matching":
+            if not isinstance(options, dict) or not isinstance(correct, dict):
+                continue
+            left, right = options.get("left"), options.get("right")
+            if not isinstance(left, list) or not isinstance(right, list):
+                continue
+            if set(correct) != set(left) or not set(correct.values()) <= set(right):
+                continue
+        else:
             continue
-        cleaned.append({
-            "type": qt,
-            "question": str(q["question"]).strip(),
-            "options": q.get("options"),
-            "correct": q["correct"],
-        })
+        cleaned.append({"type": qt, "question": text, "options": options, "correct": correct})
     return cleaned
