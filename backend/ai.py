@@ -108,7 +108,8 @@ def _extract_json(text: str):
 
 
 def _ask_model(prompt: str) -> list:
-    response = _client().models.generate_content(
+    client = _client()  # keep a reference: the HTTP connection closes when the client is garbage-collected
+    response = client.models.generate_content(
         model=MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
