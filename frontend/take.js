@@ -109,7 +109,9 @@ function renderQuestions() {
           </select>
         </div>`).join("");
     }
-    return `<div class="question" id="qb${q.id}">
+    const section = i === 0 || DRAFT.questions[i - 1].type !== q.type
+      ? `<div class="section-title">${t("section_" + q.type)}</div>` : "";
+    return `${section}<div class="question" id="qb${q.id}">
       <div class="num">${i + 1} / ${DRAFT.questions.length} <span class="pill type">${t("type_" + q.type)}</span></div>
       <div class="q-text">${escapeHtml(q.question)}</div>
       ${body}

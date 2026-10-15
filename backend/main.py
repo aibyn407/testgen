@@ -66,7 +66,10 @@ def _own_test(c: db.Conn, test_id: int, user: dict) -> dict:
 def _test_questions(c: db.Conn, test_id: int) -> list[dict]:
     rows = c.all(
         """SELECT q.*, tp.name AS topic_name FROM questions q JOIN topics tp ON tp.id = q.topic_id
-           WHERE tp.test_id = ? ORDER BY tp.idx, q.id""",
+           WHERE tp.test_id = ?
+           ORDER BY tp.idx,
+                    CASE q.type WHEN 'multiple_choice' THEN 0 WHEN 'open' THEN 1 ELSE 2 END,
+                    q.id""",
         (test_id,),
     )
     return [_load_question(r) for r in rows]
@@ -244,10 +247,16 @@ def generate_for_topic(topic_id: int, body: GenerateReq, user: dict = Depends(au
         if not topic:
             raise HTTPException(404, "topic_not_found")
         test = _own_test(c, topic["test_id"], user)
+        others = [r["question"] for r in c.all(
+            """SELECT q.question FROM questions q JOIN topics tp ON tp.id = q.topic_id
+               WHERE tp.test_id = ? AND q.topic_id <> ? AND q.type <> 'matching'""",
+            (test["id"], topic_id),
+        )]
 
     content = topic.get("content") or test["source_text"][:8000]
     try:
-        questions = ai.generate_questions(topic["name"], content, lang=test["language"], count=body.count)
+        questions = ai.generate_questions(topic["name"], content, lang=test["language"], count=body.count,
+                                          avoid=others)
     except Exception as e:
         raise HTTPException(502, f"ai_error: {e}")
     if not questions:
@@ -385,17 +394,35 @@ def _public_test(c: db.Conn, code: str) -> dict:
     return test
 
 
+def _student_selection(questions: list[dict], limit: int, shuffle: bool) -> list[dict]:
+    """Questions for one student: grouped by type (choice, written, matching).
+
+    With a limit, each type keeps its share (e.g. 10 of 30 -> 4 choice, 3 written, 3 matching).
+    """
+    pools = {t: [q for q in questions if q["type"] == t] for t in ai.TYPE_ORDER}
+    if shuffle:
+        for pool in pools.values():
+            random.shuffle(pool)
+    if limit and limit < len(questions):
+        plan = ai.distribution(limit)
+        chosen = {t: pools[t][: plan[t]] for t in ai.TYPE_ORDER}
+        # a type with too few questions gives its places to the others
+        spare = limit - sum(len(v) for v in chosen.values())
+        for t in ai.TYPE_ORDER:
+            extra = pools[t][len(chosen[t]): len(chosen[t]) + spare]
+            chosen[t] += extra
+            spare -= len(extra)
+        pools = chosen
+    return [q for t in ai.TYPE_ORDER for q in pools[t]]
+
+
 @app.get("/api/public/{code}")
 def public_test(code: str):
     with db.get_conn() as c:
         test = _public_test(c, code)
         questions = _test_questions(c, test["id"]) if test["is_open"] else []
 
-    if test["shuffle"]:
-        random.shuffle(questions)
-    if test["question_limit"] and test["question_limit"] < len(questions):
-        questions = random.sample(questions, test["question_limit"]) if test["shuffle"] \
-            else questions[: test["question_limit"]]
+    questions = _student_selection(questions, test["question_limit"], bool(test["shuffle"]))
 
     public = []
     for q in questions:

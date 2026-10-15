@@ -97,11 +97,15 @@
           <h2 style="margin:0" data-i18n="topics"></h2>
           <span class="spacer"></span>
           <select id="gen-count" style="width:auto">
-            <option value="5">5</option><option value="10">10</option>
-            <option value="15" selected>15</option><option value="20">20</option>
+            <option value="5">5 (3+1+1)</option>
+            <option value="10">10 (4+3+3)</option>
+            <option value="15" selected>15 (8+4+3)</option>
+            <option value="20">20 (11+5+4)</option>
+            <option value="25">25 (14+6+5)</option>
           </select>
           <span class="small muted" data-i18n="per_topic"></span>
         </div>
+        <p class="small muted" style="margin:0 0 4px">( <span data-i18n="types_hint"></span> )</p>
         <div id="topics-list"></div>
         <button class="primary" style="margin-top:12px" id="gen-all-btn" onclick="generateAll()" data-i18n="generate_all"></button>
       </div>

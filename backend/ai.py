@@ -4,6 +4,8 @@ import re
 from google import genai
 from google.genai import types
 
+from .scoring import _norm
+
 MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 
 LANG_INSTRUCTIONS = {
@@ -25,26 +27,51 @@ def _client() -> genai.Client:
     return genai.Client(api_key=key)
 
 
-def _build_prompt(topic_name: str, content: str, lang: str, count: int) -> str:
+TYPE_ORDER = ("multiple_choice", "open", "matching")
+
+# How many questions of each type (choice, written, matching) for a given total.
+DISTRIBUTION = {
+    5: (3, 1, 1),
+    10: (4, 3, 3),
+    15: (8, 4, 3),
+    20: (11, 5, 4),
+    25: (14, 6, 5),
+}
+
+
+def distribution(count: int) -> dict[str, int]:
+    if count in DISTRIBUTION:
+        mc, op, mt = DISTRIBUTION[count]
+    else:
+        mt = max(1, round(count * 0.2))
+        op = max(1, round(count * 0.25))
+        mc = count - op - mt
+    return dict(zip(TYPE_ORDER, (mc, op, mt)))
+
+
+def _build_prompt(topic_name: str, content: str, lang: str, need: dict[str, int], avoid: list[str]) -> str:
     lang_note = LANG_INSTRUCTIONS.get(lang, LANG_INSTRUCTIONS["kz"])
-    mc = count // 3 + (1 if count % 3 >= 1 else 0)
-    op = count // 3 + (1 if count % 3 >= 2 else 0)
-    mt = count - mc - op
+    total = sum(need.values())
+    avoid_block = ""
+    if avoid:
+        listed = "\n".join(f"- {q}" for q in avoid[:80])
+        avoid_block = f"\nЭТИ ВОПРОСЫ УЖЕ ЕСТЬ — не повторяй их и не задавай их другими словами:\n{listed}\n"
 
     return f"""ТЕМА: {topic_name}
 
 МАТЕРИАЛ:
 {content[:12000]}
 
-ЗАДАНИЕ: составь РОВНО {count} вопросов по этому материалу, строго следующих типов:
-- {mc} вопросов типа "multiple_choice" (4 варианта, один правильный)
-- {op} вопросов типа "open" (короткий письменный ответ, 1-5 слов)
-- {mt} вопросов типа "matching" (сопоставить 4 пары термин↔определение)
+ЗАДАНИЕ: составь РОВНО {total} вопросов по этому материалу, строго в таком количестве по типам:
+- ровно {need["multiple_choice"]} вопросов типа "multiple_choice" (4 варианта, один правильный)
+- ровно {need["open"]} вопросов типа "open" (короткий письменный ответ, 1-5 слов)
+- ровно {need["matching"]} вопросов типа "matching" (сопоставить 4 пары термин↔определение)
 
 {lang_note}
 
-Вопросы должны быть разнообразными: не повторяй формулировки, покрывай разные аспекты темы, разной сложности.
-
+Каждый вопрос должен быть уникальным: не повторяй формулировки и факты, покрывай разные аспекты темы,
+разной сложности. В вопросах "matching" используй разные термины, не те же, что в других вопросах.
+{avoid_block}
 Верни ТОЛЬКО валидный JSON-массив в таком формате:
 [
   {{
@@ -80,11 +107,8 @@ def _extract_json(text: str):
     return json.loads(text[start:end+1])
 
 
-def generate_questions(topic_name: str, content: str, lang: str = "kz", count: int = 15) -> list[dict]:
-    client = _client()
-    prompt = _build_prompt(topic_name, content, lang, count)
-
-    response = client.models.generate_content(
+def _ask_model(prompt: str) -> list:
+    response = _client().models.generate_content(
         model=MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -94,11 +118,42 @@ def generate_questions(topic_name: str, content: str, lang: str = "kz", count: i
             response_mime_type="application/json",
         ),
     )
+    return _extract_json(response.text or "")
 
-    raw = response.text or ""
-    questions = _extract_json(raw)
 
-    return clean_questions(questions)
+def question_key(q: dict) -> str:
+    """Normalized identity of a question, used to drop duplicates."""
+    if q["type"] == "matching" and isinstance(q.get("correct"), dict):
+        return "matching:" + "|".join(sorted(_norm(k) for k in q["correct"]))
+    return _norm(q["question"])
+
+
+def generate_questions(topic_name: str, content: str, lang: str = "kz", count: int = 15,
+                       avoid: list[str] | None = None) -> list[dict]:
+    """Generates exactly the planned number of questions of each type, without duplicates.
+
+    If the model returns too few of some type, it is asked once more for the missing ones.
+    """
+    plan = distribution(count)
+    avoid = list(avoid or [])
+    seen = {_norm(q) for q in avoid}
+    picked: list[dict] = []
+
+    for _ in range(3):
+        have = {t: sum(1 for q in picked if q["type"] == t) for t in TYPE_ORDER}
+        need = {t: plan[t] - have[t] for t in TYPE_ORDER}
+        if not any(need.values()):
+            break
+        prompt = _build_prompt(topic_name, content, lang, need, avoid + [q["question"] for q in picked])
+        for q in clean_questions(_ask_model(prompt)):
+            key = question_key(q)
+            if need[q["type"]] > 0 and key not in seen:
+                seen.add(key)
+                picked.append(q)
+                need[q["type"]] -= 1
+
+    picked.sort(key=lambda q: TYPE_ORDER.index(q["type"]))
+    return picked
 
 
 def clean_questions(questions) -> list[dict]:
