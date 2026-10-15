@@ -125,7 +125,8 @@ def get_conn():
         import psycopg
         from psycopg.rows import dict_row
 
-        raw = psycopg.connect(database_url(), row_factory=dict_row)
+        # prepare_threshold=None: Neon's pooled (PgBouncer) endpoint does not keep prepared statements
+        raw = psycopg.connect(database_url(), row_factory=dict_row, prepare_threshold=None)
         try:
             yield Conn(raw, True)
             raw.commit()
