@@ -470,7 +470,7 @@ function drawCharts(attempts, stats) {
   CHARTS.push(new Chart(document.getElementById("chart-grades"), {
     type: "bar",
     data: { labels: GRADE_ORDER, datasets: [{ label: t("students"), data: counts, backgroundColor: accent,
-      borderRadius: 4, maxBarThickness: 28 }] },
+      borderRadius: 8, maxBarThickness: 32 }] },
     options: { ...base, scales: { x: { ...axis, grid: { display: false } },
       y: { ...axis, beginAtZero: true, ticks: { color: muted, precision: 0 } } } },
   }));
@@ -480,7 +480,7 @@ function drawCharts(attempts, stats) {
     type: "bar",
     data: { labels: hard.map(s => s.question.length > 26 ? s.question.slice(0, 26) + "…" : s.question),
       datasets: [{ label: "%", data: hard.map(s => s.percent), backgroundColor: accent,
-        borderRadius: 4, maxBarThickness: 18 }] },
+        borderRadius: 8, maxBarThickness: 18 }] },
     options: { ...base, indexAxis: "y",
       plugins: { legend: { display: false },
         tooltip: { callbacks: { title: items => hard[items[0].dataIndex].question, label: c => ` ${c.parsed.x}%` } } },
