@@ -31,6 +31,15 @@ db.init_db()
 app = FastAPI(title="TestGen")
 
 
+@app.middleware("http")
+async def no_stale_frontend(request, call_next):
+    # Make browsers revalidate pages/CSS/JS so a new deploy shows up without Ctrl+Shift+R.
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # ---------- helpers ----------
 
 def _load_question(row: dict) -> dict:
