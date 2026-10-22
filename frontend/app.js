@@ -210,6 +210,39 @@ async function copyLink(btn) {
   setTimeout(() => { btn.textContent = t("copy"); }, 1500);
 }
 
+function qrCanvas(text, cell = 12, margin = 4) {
+  const qr = qrcode(0, "M");
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount(), size = (n + margin * 2) * cell;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = "#1c1830";
+  for (let r = 0; r < n; r++)
+    for (let c = 0; c < n; c++)
+      if (qr.isDark(r, c)) ctx.fillRect((c + margin) * cell, (r + margin) * cell, cell, cell);
+  return canvas;
+}
+
+function showQr() {
+  if (!window.qrcode) return;
+  const url = shareUrl();
+  openModal(`
+    <div class="row"><h2 style="margin:0">${escapeHtml(S.data.test.title)}</h2><span class="spacer"></span>
+      <button class="small" onclick="closeModal()">✕</button></div>
+    <div class="qr-box" id="qr-box"></div>
+    <p class="qr-url">${escapeHtml(url)}</p>
+    <p class="small muted" style="text-align:center">${t("qr_hint")}</p>
+    <div class="row" style="justify-content:center">
+      <a class="btn primary" id="qr-download" download="testgen-qr.png">${t("qr_download")}</a>
+    </div>`);
+  const canvas = qrCanvas(url);
+  document.getElementById("qr-box").appendChild(canvas);
+  document.getElementById("qr-download").href = canvas.toDataURL("image/png");
+}
+
 // ---------- questions tab ----------
 
 function renderQuestionsTab() {

@@ -422,3 +422,15 @@ td.wrap { white-space: normal; }
   h1 { font-size: 24px; }
   .score-hero .letter { font-size: 76px; }
 }
+
+/* ---------- QR ---------- */
+.qr-box { display: grid; place-items: center; margin: 16px 0 8px; }
+.qr-box canvas {
+  width: min(360px, 100%); height: auto; aspect-ratio: 1; image-rendering: pixelated;
+  border-radius: 18px; box-shadow: var(--shadow-lg);
+}
+.qr-url { text-align: center; font-family: ui-monospace, monospace; font-size: 14px; font-weight: 700; word-break: break-all; margin: 8px 0 4px; }
+.btn.primary {
+  background: var(--grad); border-color: transparent; color: #fff; box-shadow: var(--glow);
+}
+.btn.primary:hover { background: var(--grad); color: #fff; border-color: transparent; }
