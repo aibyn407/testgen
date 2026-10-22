@@ -26,6 +26,7 @@ if (ROOT / ".env").exists():
 from . import ai, auth, db, export, parser, scoring  # noqa: E402  (needs .env loaded first)
 
 MAX_UPLOAD_MB = 20
+MAX_TEXT_CHARS = 500_000
 LOCK_MINUTES = 15  # a student who leaves the test page may retry only after this
 QUESTION_TYPES = {"multiple_choice", "open", "matching"}
 
@@ -147,38 +148,51 @@ def logout(user: dict = Depends(auth.current_user)):
 
 @app.post("/api/upload")
 async def upload(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    text: Optional[str] = Form(None),  # pasted text instead of a file
     language: str = Form("kz"),
     title: Optional[str] = Form(None),
     user: dict = Depends(auth.current_user),
 ):
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in (".docx", ".pdf", ".txt", ".md"):
-        raise HTTPException(400, "bad_file_type")
-    data = await file.read()
-    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(400, "file_too_large")
+    if file is not None and file.filename:
+        suffix = Path(file.filename).suffix.lower()
+        if suffix not in (".docx", ".pdf", ".txt", ".md"):
+            raise HTTPException(400, "bad_file_type")
+        data = await file.read()
+        if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+            raise HTTPException(400, "file_too_large")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / f"upload{suffix}"
-        path.write_bytes(data)
-        try:
-            text = parser.extract_text(path)
-        except Exception:
-            raise HTTPException(400, "cannot_read_file")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / f"upload{suffix}"
+            path.write_bytes(data)
+            try:
+                text = parser.extract_text(path)
+            except Exception:
+                raise HTTPException(400, "cannot_read_file")
+        filename = file.filename
+        default_title = Path(file.filename).stem
+    elif text is not None:
+        if len(text) > MAX_TEXT_CHARS:
+            raise HTTPException(400, "text_too_long")
+        text = text.replace("\r\n", "\n")
+        filename = None
+        first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        default_title = first_line[:80]
+    else:
+        raise HTTPException(400, "no_input")
 
     if len(text.strip()) < 200:
         raise HTTPException(400, "too_little_text")
 
     topics = parser.split_topics(text)
-    display_title = (title or "").strip() or Path(file.filename).stem
+    display_title = (title or "").strip() or default_title
     lang = language if language in ("kz", "ru", "en") else "kz"
 
     with db.get_conn() as c:
         test_id = c.insert(
             """INSERT INTO tests (owner_id, title, filename, source_text, language, share_code, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (user["id"], display_title[:200], file.filename, text, lang, _new_share_code(c), db.now()),
+            (user["id"], display_title[:200], filename, text, lang, _new_share_code(c), db.now()),
         )
         for i, t in enumerate(topics):
             c.execute(

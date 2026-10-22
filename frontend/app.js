@@ -126,6 +126,7 @@ function onFilePicked() {
 }
 
 (function setupDropzone() {
+  setUploadMode(S.uploadMode || "file");
   const dz = document.getElementById("dropzone");
   ["dragenter", "dragover"].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add("drag"); }));
   ["dragleave", "drop"].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove("drag"); }));
@@ -137,14 +138,39 @@ function onFilePicked() {
   });
 })();
 
+const MIN_TEXT = 200;
+
+function setUploadMode(mode) {
+  S.uploadMode = mode;
+  document.querySelectorAll(".mode-switch button").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
+  document.getElementById("dropzone").classList.toggle("hidden", mode !== "file");
+  document.getElementById("text-box").classList.toggle("hidden", mode !== "text");
+  document.getElementById("upload-status").textContent = "";
+  if (mode === "text") { onTextInput(); document.getElementById("text-input").focus(); }
+}
+
+function onTextInput() {
+  const n = document.getElementById("text-input").value.trim().length;
+  const el = document.getElementById("text-count");
+  el.textContent = `${n.toLocaleString()} ${t("chars")}`;
+  el.classList.toggle("err-text", n > 0 && n < MIN_TEXT);
+  if (n >= MIN_TEXT) document.getElementById("upload-status").textContent = "";
+}
+
 async function uploadFile() {
   const fileEl = document.getElementById("file-input");
+  const textEl = document.getElementById("text-input");
   const status = document.getElementById("upload-status");
   const btn = document.getElementById("upload-btn");
-  if (!fileEl.files[0]) { status.className = "status err"; status.textContent = t("choose_file"); return; }
-
   const fd = new FormData();
-  fd.append("file", fileEl.files[0]);
+  if (S.uploadMode === "text") {
+    const text = textEl.value.trim();
+    if (text.length < MIN_TEXT) { status.className = "status err"; status.textContent = t("err_too_little_text"); return; }
+    fd.append("text", text);
+  } else {
+    if (!fileEl.files[0]) { status.className = "status err"; status.textContent = t("choose_file"); return; }
+    fd.append("file", fileEl.files[0]);
+  }
   fd.append("title", document.getElementById("title-input").value);
   fd.append("language", document.getElementById("lang-select").value);
 
@@ -154,7 +180,7 @@ async function uploadFile() {
   try {
     const res = await api("POST", "/api/upload", fd, { isForm: true });
     status.textContent = "";
-    fileEl.value = ""; document.getElementById("title-input").value = ""; onFilePicked();
+    fileEl.value = ""; textEl.value = ""; document.getElementById("title-input").value = ""; onFilePicked();
     location.hash = `#/test/${res.test_id}`;
   } catch (e) {
     status.className = "status err"; status.textContent = e.message;

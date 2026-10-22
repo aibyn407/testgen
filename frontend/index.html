@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" />
-<link rel="stylesheet" href="/style.css?v=4" />
+<link rel="stylesheet" href="/style.css?v=5" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 </head>
@@ -48,12 +48,25 @@
   <!-- HOME -->
   <section id="view-home" class="view hidden">
     <div class="card accent-top">
-      <h2 data-i18n="upload_title"></h2>
+      <div class="row" style="margin-bottom:12px">
+        <h2 style="margin:0" data-i18n="upload_title"></h2>
+        <span class="spacer"></span>
+        <div class="mode-switch">
+          <button type="button" data-mode="file" onclick="setUploadMode('file')" data-i18n="mode_file"></button>
+          <button type="button" data-mode="text" onclick="setUploadMode('text')" data-i18n="mode_text"></button>
+        </div>
+      </div>
       <label class="dropzone" id="dropzone">
         <input type="file" id="file-input" accept=".docx,.pdf,.txt,.md" onchange="onFilePicked()" />
         <strong id="file-name" data-i18n="choose_file"></strong>
         <span class="small" data-i18n="upload_hint"></span>
       </label>
+      <div id="text-box" class="hidden">
+        <textarea id="text-input" class="paste-area" data-i18n-ph="paste_placeholder" oninput="onTextInput()"></textarea>
+        <div class="row small muted" style="margin:-6px 0 14px">
+          <span data-i18n="paste_hint"></span><span class="spacer"></span><span id="text-count"></span>
+        </div>
+      </div>
       <label class="field"><input type="text" id="title-input" data-i18n-ph="title_placeholder" maxlength="200" /></label>
       <div class="row">
         <label class="small" for="lang-select" data-i18n="test_language"></label>
@@ -163,7 +176,7 @@
 
 <div id="modal-root"></div>
 
-<script src="/i18n.js?v=4"></script>
-<script src="/app.js?v=4"></script>
+<script src="/i18n.js?v=5"></script>
+<script src="/app.js?v=5"></script>
 </body>
 </html>

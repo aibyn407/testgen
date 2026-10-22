@@ -458,3 +458,11 @@ td.wrap { white-space: normal; }
   font-size: 56px; font-weight: 900; line-height: 1.1; margin-top: 8px; font-variant-numeric: tabular-nums;
   background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
 }
+
+/* ---------- paste text ---------- */
+.mode-switch { display: flex; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 3px; }
+.mode-switch button { border: 0; background: none; color: var(--muted); padding: 5px 14px; border-radius: 9px; font-size: 14px; box-shadow: none; }
+.mode-switch button:hover { background: none; color: var(--text); transform: none; }
+.mode-switch button.active { background: var(--grad); color: #fff; box-shadow: var(--glow); }
+textarea.paste-area { min-height: 220px; margin-bottom: 14px; line-height: 1.5; }
+.err-text { color: var(--err); font-weight: 700; }

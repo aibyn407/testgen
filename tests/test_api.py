@@ -1,4 +1,4 @@
-from conftest import FAKE_QUESTIONS
+from conftest import FAKE_QUESTIONS, LECTURE_TEXT
 
 
 def test_register_login_and_wrong_password(client):
@@ -147,3 +147,14 @@ def test_anti_cheat_and_question_time_settings(client, teacher, ready_test):
     client.patch(f"/api/tests/{test_id}", headers=teacher, json={"anti_cheat": False, "question_time": 0})
     data = client.get(f"/api/public/{code}").json()
     assert data["anti_cheat"] is False and data["question_time"] == 0
+
+
+def test_create_test_from_pasted_text(client, teacher):
+    r = client.post("/api/upload", headers=teacher, data={"text": LECTURE_TEXT, "language": "kz"})
+    assert r.status_code == 200, r.text
+    detail = client.get(f"/api/tests/{r.json()['test_id']}", headers=teacher).json()
+    assert detail["topics"] and detail["test"]["filename"] is None
+    assert detail["test"]["title"] == LECTURE_TEXT.strip().splitlines()[0].strip()[:80]
+
+    assert client.post("/api/upload", headers=teacher, data={"text": "тым қысқа"}).json()["detail"] == "too_little_text"
+    assert client.post("/api/upload", headers=teacher, data={"language": "kz"}).json()["detail"] == "no_input"
