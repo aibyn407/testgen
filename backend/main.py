@@ -150,6 +150,7 @@ def logout(user: dict = Depends(auth.current_user)):
 async def upload(
     file: Optional[UploadFile] = File(None),
     text: Optional[str] = Form(None),  # pasted text instead of a file
+    topic: Optional[str] = Form(None),  # only topic names (one per line): AI writes from general knowledge
     language: str = Form("kz"),
     title: Optional[str] = Form(None),
     user: dict = Depends(auth.current_user),
@@ -171,6 +172,22 @@ async def upload(
                 raise HTTPException(400, "cannot_read_file")
         filename = file.filename
         default_title = Path(file.filename).stem
+    elif topic is not None:
+        names = [ln.strip()[:200] for ln in topic.splitlines() if ln.strip()][:20]
+        if not names or len(names[0]) < 3:
+            raise HTTPException(400, "topic_too_short")
+        display_title = (title or "").strip() or names[0]
+        lang = language if language in ("kz", "ru", "en") else "kz"
+        with db.get_conn() as c:
+            test_id = c.insert(
+                """INSERT INTO tests (owner_id, title, filename, source_text, language, share_code, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (user["id"], display_title[:200], None, "", lang, _new_share_code(c), db.now()),
+            )
+            for i, name in enumerate(names):
+                c.execute("INSERT INTO topics (test_id, name, idx, content) VALUES (?, ?, ?, ?)",
+                          (test_id, name, i, ""))
+        return {"test_id": test_id, "title": display_title, "topics_count": len(names)}
     elif text is not None:
         if len(text) > MAX_TEXT_CHARS:
             raise HTTPException(400, "text_too_long")

@@ -466,3 +466,4 @@ td.wrap { white-space: normal; }
 .mode-switch button.active { background: var(--grad); color: #fff; box-shadow: var(--glow); }
 textarea.paste-area { min-height: 220px; margin-bottom: 14px; line-height: 1.5; }
 .err-text { color: var(--err); font-weight: 700; }
+textarea.topic-area { min-height: 110px; margin-bottom: 14px; }

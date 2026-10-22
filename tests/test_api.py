@@ -158,3 +158,17 @@ def test_create_test_from_pasted_text(client, teacher):
 
     assert client.post("/api/upload", headers=teacher, data={"text": "тым қысқа"}).json()["detail"] == "too_little_text"
     assert client.post("/api/upload", headers=teacher, data={"language": "kz"}).json()["detail"] == "no_input"
+
+
+def test_create_test_from_topic_only(client, teacher):
+    r = client.post("/api/upload", headers=teacher,
+                    data={"topic": "Қазақ хандығы\n\nАбылай хан (9-сынып)", "language": "kz"})
+    assert r.status_code == 200, r.text
+    test_id = r.json()["test_id"]
+    detail = client.get(f"/api/tests/{test_id}", headers=teacher).json()
+    assert detail["test"]["title"] == "Қазақ хандығы"
+    assert [t["name"] for t in detail["topics"]] == ["Қазақ хандығы", "Абылай хан (9-сынып)"]
+    gen = client.post(f"/api/topics/{detail['topics'][0]['id']}/generate", headers=teacher, json={"count": 3})
+    assert gen.status_code == 200
+
+    assert client.post("/api/upload", headers=teacher, data={"topic": "  "}).json()["detail"] == "topic_too_short"

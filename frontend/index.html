@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" />
-<link rel="stylesheet" href="/style.css?v=5" />
+<link rel="stylesheet" href="/style.css?v=6" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 </head>
@@ -54,6 +54,7 @@
         <div class="mode-switch">
           <button type="button" data-mode="file" onclick="setUploadMode('file')" data-i18n="mode_file"></button>
           <button type="button" data-mode="text" onclick="setUploadMode('text')" data-i18n="mode_text"></button>
+          <button type="button" data-mode="topic" onclick="setUploadMode('topic')" data-i18n="mode_topic"></button>
         </div>
       </div>
       <label class="dropzone" id="dropzone">
@@ -66,6 +67,10 @@
         <div class="row small muted" style="margin:-6px 0 14px">
           <span data-i18n="paste_hint"></span><span class="spacer"></span><span id="text-count"></span>
         </div>
+      </div>
+      <div id="topic-box" class="hidden">
+        <textarea id="topic-input" class="topic-area" data-i18n-ph="topic_placeholder" maxlength="4000"></textarea>
+        <p class="small muted" style="margin:-6px 0 14px" data-i18n="topic_hint"></p>
       </div>
       <label class="field"><input type="text" id="title-input" data-i18n-ph="title_placeholder" maxlength="200" /></label>
       <div class="row">
@@ -176,7 +181,7 @@
 
 <div id="modal-root"></div>
 
-<script src="/i18n.js?v=5"></script>
-<script src="/app.js?v=5"></script>
+<script src="/i18n.js?v=6"></script>
+<script src="/app.js?v=6"></script>
 </body>
 </html>

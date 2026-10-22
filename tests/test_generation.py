@@ -71,3 +71,11 @@ def test_short_type_pool_gives_places_to_others():
     questions = [dict(q, id=i) for i, q in enumerate([mc(i) for i in range(12)] + [op(0)])]
     part = main._student_selection(questions, 10, shuffle=False)
     assert len(part) == 10 and [q["type"] for q in part][-1] == "open"
+
+
+def test_prompt_without_material_uses_general_knowledge():
+    need = {"multiple_choice": 2, "open": 1, "matching": 1}
+    with_text = ai._build_prompt("Тема", "Мәтін " * 50, "kz", need, [])
+    topic_only = ai._build_prompt("Қазақ хандығы", "", "kz", need, [])
+    assert "МАТЕРИАЛ:" in with_text and "МАТЕРИАЛА НЕТ" not in with_text
+    assert "МАТЕРИАЛА НЕТ" in topic_only and "Қазақ хандығы" in topic_only

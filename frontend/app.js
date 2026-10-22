@@ -145,8 +145,13 @@ function setUploadMode(mode) {
   document.querySelectorAll(".mode-switch button").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
   document.getElementById("dropzone").classList.toggle("hidden", mode !== "file");
   document.getElementById("text-box").classList.toggle("hidden", mode !== "text");
+  document.getElementById("topic-box").classList.toggle("hidden", mode !== "topic");
   document.getElementById("upload-status").textContent = "";
+  const btn = document.getElementById("upload-btn");
+  btn.dataset.i18n = mode === "file" ? "upload_btn" : "create_btn";
+  btn.textContent = t(btn.dataset.i18n);
   if (mode === "text") { onTextInput(); document.getElementById("text-input").focus(); }
+  if (mode === "topic") document.getElementById("topic-input").focus();
 }
 
 function onTextInput() {
@@ -162,10 +167,15 @@ async function uploadFile() {
   const textEl = document.getElementById("text-input");
   const status = document.getElementById("upload-status");
   const btn = document.getElementById("upload-btn");
+  const topicEl = document.getElementById("topic-input");
   const fd = new FormData();
-  if (S.uploadMode === "text") {
+  if (S.uploadMode === "topic") {
+    const topic = topicEl.value.trim();
+    if (topic.length < 3) { status.className = "status err"; status.textContent = t("err_topic_too_short"); return; }
+    fd.append("topic", topic);
+  } else if (S.uploadMode === "text") {
     const text = textEl.value.trim();
-    if (text.length < MIN_TEXT) { status.className = "status err"; status.textContent = t("err_too_little_text"); return; }
+    if (text.length < MIN_TEXT) { status.className = "status err"; status.textContent = t("err_text_short"); return; }
     fd.append("text", text);
   } else {
     if (!fileEl.files[0]) { status.className = "status err"; status.textContent = t("choose_file"); return; }
@@ -180,7 +190,7 @@ async function uploadFile() {
   try {
     const res = await api("POST", "/api/upload", fd, { isForm: true });
     status.textContent = "";
-    fileEl.value = ""; textEl.value = ""; document.getElementById("title-input").value = ""; onFilePicked();
+    fileEl.value = ""; textEl.value = ""; topicEl.value = ""; document.getElementById("title-input").value = ""; onFilePicked();
     location.hash = `#/test/${res.test_id}`;
   } catch (e) {
     status.className = "status err"; status.textContent = e.message;
