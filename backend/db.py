@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS tests (
     question_limit INTEGER NOT NULL DEFAULT 0,
     shuffle INTEGER NOT NULL DEFAULT 1,
     show_answers INTEGER NOT NULL DEFAULT 1,
+    anti_cheat INTEGER NOT NULL DEFAULT 1,
+    question_time INTEGER NOT NULL DEFAULT 40,
     created_at TEXT NOT NULL
 );
 
@@ -83,6 +85,7 @@ CREATE TABLE IF NOT EXISTS attempts (
     grade TEXT NOT NULL,
     details TEXT,
     duration_sec INTEGER,
+    violation INTEGER NOT NULL DEFAULT 0,
     taken_at TEXT NOT NULL
 );
 
@@ -91,6 +94,13 @@ CREATE INDEX IF NOT EXISTS idx_topics_test ON topics(test_id);
 CREATE INDEX IF NOT EXISTS idx_questions_topic ON questions(topic_id);
 CREATE INDEX IF NOT EXISTS idx_attempts_test ON attempts(test_id);
 """
+
+# Columns added after the first release; existing databases get them on startup.
+MIGRATIONS = [
+    ("tests", "anti_cheat", "INTEGER NOT NULL DEFAULT 1"),
+    ("tests", "question_time", "INTEGER NOT NULL DEFAULT 40"),
+    ("attempts", "violation", "INTEGER NOT NULL DEFAULT 0"),
+]
 
 
 class Conn:
@@ -152,3 +162,8 @@ def init_db():
     with get_conn() as c:
         for stmt in statements:
             c.execute(stmt)
+        for table, column, ddl in MIGRATIONS:
+            if is_pg():
+                c.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}")
+            elif column not in {r["name"] for r in c.all(f"PRAGMA table_info({table})")}:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")

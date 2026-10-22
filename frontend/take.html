@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" />
-<link rel="stylesheet" href="/style.css?v=3" />
+<link rel="stylesheet" href="/style.css?v=4" />
 </head>
 <body>
 <header>
@@ -28,6 +28,7 @@
     <form class="card accent-top" onsubmit="startTest(event)">
       <h1 id="start-title"></h1>
       <p class="meta" id="start-meta"></p>
+      <ul class="rules" id="start-rules"></ul>
       <label class="field"><span data-i18n="full_name"></span>
         <input type="text" id="student-name" data-i18n-ph="full_name_ph" required minlength="2" maxlength="80" autocomplete="name" />
       </label>
@@ -43,11 +44,12 @@
     <div class="card accent-top test-head">
       <h1 id="quiz-title"></h1>
       <p class="meta" id="quiz-student"></p>
+      <ul class="rules" id="quiz-rules"></ul>
     </div>
     <div class="timer hidden" id="timer"></div>
     <div id="questions"></div>
     <div class="status err" id="submit-status"></div>
-    <button class="primary big" id="submit-btn" onclick="submitAnswers(false)" data-i18n="submit"></button>
+    <button class="primary big" id="submit-btn" onclick="onMainButton()" data-i18n="submit"></button>
   </section>
 
   <!-- result -->
@@ -57,7 +59,7 @@
   </section>
 </main>
 
-<script src="/i18n.js?v=3"></script>
-<script src="/take.js?v=3"></script>
+<script src="/i18n.js?v=4"></script>
+<script src="/take.js?v=4"></script>
 </body>
 </html>

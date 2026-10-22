@@ -118,3 +118,32 @@ def test_share_page_is_served(client, ready_test):
     _, code = ready_test
     r = client.get(f"/t/{code}")
     assert r.status_code == 200 and "<html" in r.text.lower()
+
+
+def test_leaving_the_page_gives_zero_and_locks_student(client, teacher, ready_test):
+    test_id, code = ready_test
+    data = client.get(f"/api/public/{code}").json()
+    assert data["anti_cheat"] is True and data["question_time"] == 40
+
+    questions = client.get(f"/api/tests/{test_id}", headers=teacher).json()["questions"]
+    answers = {str(q["id"]): q["correct"] for q in questions}
+    student = {"student_name": "Ерлан Серік", "student_group": "ТИИ 24-11"}
+    r = client.post(f"/api/public/{code}/submit", json={**student, "answers": answers, "violation": True})
+    assert r.status_code == 200 and r.json()["score"] == 0 and r.json()["grade"]["letter"] == "F"
+
+    # same student (name typed differently) is locked; another student is not
+    lock = client.post(f"/api/public/{code}/lock", json={"student_name": "  ерлан  СЕРІК", "student_group": "тии 24-11"})
+    assert 0 < lock.json()["locked_seconds"] <= 15 * 60
+    assert client.post(f"/api/public/{code}/submit", json={**student, "answers": answers}).status_code == 423
+    other = client.post(f"/api/public/{code}/lock", json={"student_name": "Басқа студент"})
+    assert other.json()["locked_seconds"] == 0
+
+    res = client.get(f"/api/tests/{test_id}/results", headers=teacher).json()
+    assert res["attempts"][0]["violation"] == 1
+
+
+def test_anti_cheat_and_question_time_settings(client, teacher, ready_test):
+    test_id, code = ready_test
+    client.patch(f"/api/tests/{test_id}", headers=teacher, json={"anti_cheat": False, "question_time": 0})
+    data = client.get(f"/api/public/{code}").json()
+    assert data["anti_cheat"] is False and data["question_time"] == 0

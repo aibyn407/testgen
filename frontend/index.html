@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" />
-<link rel="stylesheet" href="/style.css?v=3" />
+<link rel="stylesheet" href="/style.css?v=4" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 </head>
@@ -126,6 +126,8 @@
         <div class="switch-row"><span data-i18n="s_limit"></span><input type="number" id="s-limit" min="0" max="500" /></div>
         <div class="switch-row"><span data-i18n="s_shuffle"></span><input type="checkbox" id="s-shuffle" /></div>
         <div class="switch-row"><span data-i18n="s_show"></span><input type="checkbox" id="s-show" /></div>
+        <div class="switch-row"><span data-i18n="s_qtime"></span><input type="number" id="s-qtime" min="0" max="600" /></div>
+        <div class="switch-row"><span data-i18n="s_anticheat"></span><input type="checkbox" id="s-anticheat" /></div>
         <div class="row end" style="margin-top:12px">
           <span class="status" id="settings-status" style="margin:0"></span>
           <button class="primary" type="submit" data-i18n="save"></button>
@@ -161,7 +163,7 @@
 
 <div id="modal-root"></div>
 
-<script src="/i18n.js?v=3"></script>
-<script src="/app.js?v=3"></script>
+<script src="/i18n.js?v=4"></script>
+<script src="/app.js?v=4"></script>
 </body>
 </html>

@@ -4,6 +4,7 @@ import random
 import secrets
 import tempfile
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import quote
 
@@ -25,6 +26,7 @@ if (ROOT / ".env").exists():
 from . import ai, auth, db, export, parser, scoring  # noqa: E402  (needs .env loaded first)
 
 MAX_UPLOAD_MB = 20
+LOCK_MINUTES = 15  # a student who leaves the test page may retry only after this
 QUESTION_TYPES = {"multiple_choice", "open", "matching"}
 
 db.init_db()
@@ -222,6 +224,8 @@ class TestSettings(BaseModel):
     question_limit: Optional[int] = Field(None, ge=0, le=500)
     shuffle: Optional[bool] = None
     show_answers: Optional[bool] = None
+    anti_cheat: Optional[bool] = None
+    question_time: Optional[int] = Field(None, ge=0, le=600)
 
 
 @app.patch("/api/tests/{test_id}")
@@ -447,8 +451,42 @@ def public_test(code: str):
         "language": test["language"],
         "is_open": bool(test["is_open"]),
         "time_limit": test["time_limit"],
+        "question_time": test["question_time"],
+        "anti_cheat": bool(test["anti_cheat"]),
+        "lock_minutes": LOCK_MINUTES,
         "questions": public,
     }
+
+
+def _same_student(a: str, b: str) -> bool:
+    return " ".join(a.lower().split()) == " ".join(b.lower().split())
+
+
+def _locked_seconds(c, test_id: int, name: str, group: str) -> int:
+    """Seconds left until this student may take the test again after leaving the page."""
+    since = datetime.now(timezone.utc) - timedelta(minutes=LOCK_MINUTES)
+    rows = c.all(
+        "SELECT student_name, student_group, taken_at FROM attempts WHERE test_id = ? AND violation = 1 AND taken_at > ?",
+        (test_id, since.isoformat(timespec="seconds")),
+    )
+    left = 0
+    for r in rows:
+        if _same_student(r["student_name"], name) and _same_student(r["student_group"] or "", group):
+            until = datetime.fromisoformat(r["taken_at"]) + timedelta(minutes=LOCK_MINUTES)
+            left = max(left, int((until - datetime.now(timezone.utc)).total_seconds()))
+    return left
+
+
+class LockReq(BaseModel):
+    student_name: str = Field(min_length=2, max_length=80)
+    student_group: str = Field("", max_length=40)
+
+
+@app.post("/api/public/{code}/lock")
+def lock_status(code: str, body: LockReq):
+    with db.get_conn() as c:
+        test = _public_test(c, code)
+        return {"locked_seconds": _locked_seconds(c, test["id"], body.student_name, body.student_group)}
 
 
 class SubmitReq(BaseModel):
@@ -456,6 +494,7 @@ class SubmitReq(BaseModel):
     student_group: str = Field("", max_length=40)
     answers: dict  # {question_id: answer}
     duration_sec: Optional[int] = Field(None, ge=0)
+    violation: bool = False  # the student left the test page: recorded as 0 points
 
 
 @app.post("/api/public/{code}/submit")
@@ -465,6 +504,8 @@ def submit(code: str, body: SubmitReq):
         if not test["is_open"]:
             raise HTTPException(403, "test_closed")
         questions = _test_questions(c, test["id"])
+        if _locked_seconds(c, test["id"], body.student_name, body.student_group) > 0:
+            raise HTTPException(423, "locked")
 
     if test["question_limit"] and test["question_limit"] < len(questions):
         # Only the questions this student was given count; the total stays fixed so
@@ -487,16 +528,19 @@ def submit(code: str, body: SubmitReq):
             "user": user_ans, "correct": q["correct"], "points": points,
         })
 
+    if body.violation:
+        score, details = 0, []
     score = round(score, 2)
     percent = round(score / total * 100, 1)
     g = scoring.grade(percent)
     with db.get_conn() as c:
         c.insert(
             """INSERT INTO attempts (test_id, student_name, student_group, score, total, percent, grade,
-                                     details, duration_sec, taken_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                     details, duration_sec, violation, taken_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (test["id"], body.student_name.strip(), body.student_group.strip(), score, total, percent,
-             g["letter"], json.dumps(details, ensure_ascii=False), body.duration_sec, db.now()),
+             g["letter"], json.dumps(details, ensure_ascii=False), body.duration_sec, int(body.violation),
+             db.now()),
         )
 
     return {

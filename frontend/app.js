@@ -396,6 +396,8 @@ function renderSettings() {
   document.getElementById("s-limit").value = x.question_limit;
   document.getElementById("s-shuffle").checked = !!x.shuffle;
   document.getElementById("s-show").checked = !!x.show_answers;
+  document.getElementById("s-qtime").value = x.question_time;
+  document.getElementById("s-anticheat").checked = !!x.anti_cheat;
   document.getElementById("settings-status").textContent = "";
 }
 
@@ -410,6 +412,8 @@ async function saveSettings(e) {
       question_limit: Number(document.getElementById("s-limit").value) || 0,
       shuffle: document.getElementById("s-shuffle").checked,
       show_answers: document.getElementById("s-show").checked,
+      question_time: Number(document.getElementById("s-qtime").value) || 0,
+      anti_cheat: document.getElementById("s-anticheat").checked,
     });
     await reloadTest();
     status.className = "status ok"; status.textContent = t("saved");
@@ -481,7 +485,8 @@ function renderResults() {
           <td>${escapeHtml(a.student_group || "—")}</td>
           <td>${a.score}/${a.total}</td>
           <td>${Math.round(a.percent)}%</td>
-          <td><span class="grade g-${a.grade[0]}">${a.grade}</span></td>
+          <td><span class="grade g-${a.grade[0]}">${a.grade}</span>
+            ${a.violation ? `<span class="pill off">${t("violation")}</span>` : ""}</td>
           <td>${fmtDuration(a.duration_sec)}</td>
           <td>${new Date(a.taken_at).toLocaleString()}</td>
           <td><button class="small" onclick="viewAttempt(${a.id})">${t("view")}</button>

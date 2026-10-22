@@ -434,3 +434,27 @@ td.wrap { white-space: normal; }
   background: var(--grad); border-color: transparent; color: #fff; box-shadow: var(--glow);
 }
 .btn.primary:hover { background: var(--grad); color: #fff; border-color: transparent; }
+
+/* ---------- exam rules ---------- */
+.rules { list-style: none; margin: 4px 0 14px; padding: 0; display: grid; gap: 6px; }
+.rules:empty { display: none; }
+.rules li {
+  position: relative; padding: 8px 12px 8px 36px; border-radius: 12px; font-size: 14px; font-weight: 700;
+  background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--text);
+}
+.rules li::before { content: "⚠"; position: absolute; left: 12px; top: 7px; color: var(--warn); }
+.q-timer {
+  position: relative; height: 34px; border-radius: 99px; overflow: hidden; margin: 4px 0 14px;
+  background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow);
+}
+.q-timer-bar { position: absolute; inset: 0 auto 0 0; background: var(--grad); transition: width .25s linear; }
+.q-timer span {
+  position: relative; display: grid; place-items: center; height: 100%;
+  font-weight: 900; font-variant-numeric: tabular-nums; color: var(--text); mix-blend-mode: normal;
+}
+.q-timer.low .q-timer-bar { background: var(--err); }
+.q-timer.low span { animation: pulse 1s ease-in-out infinite; }
+.lock-time {
+  font-size: 56px; font-weight: 900; line-height: 1.1; margin-top: 8px; font-variant-numeric: tabular-nums;
+  background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
