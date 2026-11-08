@@ -6,43 +6,76 @@
 <title>TestGen</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" />
-<link rel="stylesheet" href="/style.css?v=8" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@300;500;600;700;800;900&family=Onest:wght@400;500;600;700&display=swap" />
+<link rel="stylesheet" href="/style.css?v=11" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 </head>
 <body>
 <header>
-  <div class="brand" onclick="goHome()"><span class="logo">TG</span><span>TestGen</span></div>
+  <div class="brand" onclick="goHome()"><span class="logo" aria-hidden="true"></span><span>TEST<b>GEN</b></span></div>
+  <nav class="links hidden" id="top-links" aria-label="Main">
+    <a href="#" data-nav="home" data-i18n="nav_tests"></a>
+    <a href="#/alerts" data-nav="alerts" data-i18n="alerts_title"></a>
+    <a href="#/profile" data-nav="profile" data-i18n="nav_profile"></a>
+  </nav>
   <div class="header-right">
+    <div class="lang-switch top">
+      <button data-lang="kz" onclick="setLang('kz')">KZ</button>
+      <button data-lang="ru" onclick="setLang('ru')">RU</button>
+      <button data-lang="en" onclick="setLang('en')">EN</button>
+    </div>
     <button class="bell hidden" id="alerts-btn" onclick="location.hash='#/alerts'" data-i18n-title="alerts_title">🔔<span class="badge hidden" id="alerts-badge"></span></button>
-    <span class="user-chip hidden" id="user-chip"></span>
+    <button class="user-chip hidden" id="user-chip" onclick="location.hash='#/profile'" data-i18n-title="nav_profile"></button>
+    <button class="burger hidden" id="burger" aria-expanded="false" aria-controls="menu" onclick="toggleMenu()"><i aria-hidden="true"></i><span data-i18n="menu"></span></button>
+    <button class="small hidden" id="logout-btn" onclick="logout()" data-i18n="logout"></button>
+  </div>
+</header>
+
+<div class="menu" id="menu" aria-hidden="true">
+  <nav aria-label="Menu">
+    <a onclick="menuGo('')"><small>→</small><span data-i18n="nav_home"></span></a>
+    <a onclick="menuGo('', true)"><small>+</small><span data-i18n="upload_title"></span></a>
+    <a onclick="menuGo('#/alerts')"><small>!</small><span data-i18n="alerts_title"></span> <span class="badge hidden" id="menu-alerts"></span></a>
+    <a onclick="menuGo('#/profile')"><small>◉</small><span data-i18n="nav_profile"></span></a>
+    <a onclick="toggleMenu(false); logout()"><small>←</small><span data-i18n="logout"></span></a>
+  </nav>
+  <div class="foot">
+    <span data-i18n="bg_label"></span><span id="menu-bg"></span>
+    <span class="spacer"></span>
     <div class="lang-switch">
       <button data-lang="kz" onclick="setLang('kz')">KZ</button>
       <button data-lang="ru" onclick="setLang('ru')">RU</button>
       <button data-lang="en" onclick="setLang('en')">EN</button>
     </div>
-    <button class="small hidden" id="logout-btn" onclick="logout()" data-i18n="logout">Шығу</button>
   </div>
-</header>
+</div>
+<canvas id="particles" class="hidden" aria-hidden="true"></canvas>
 
 <main>
   <!-- AUTH -->
   <section id="view-auth" class="view hidden">
-    <div class="auth-box">
-      <h1 data-i18n="auth_title"></h1>
-      <p class="sub" data-i18n="auth_sub"></p>
-      <form class="card" onsubmit="submitAuth(event)">
-        <label class="field"><span data-i18n="username"></span>
-          <input type="text" id="auth-user" autocomplete="username" required minlength="3" maxlength="40" />
-        </label>
-        <label class="field"><span data-i18n="password"></span>
-          <input type="password" id="auth-pass" autocomplete="current-password" required minlength="6" />
-        </label>
-        <button class="primary big" id="auth-submit" type="submit"></button>
-        <div class="status" id="auth-status"></div>
-        <div style="text-align:center"><button type="button" class="link" id="auth-toggle" onclick="toggleAuthMode()"></button></div>
-      </form>
+    <div class="auth-wrap">
+      <div class="auth-hero" id="auth-hero">
+        <div class="auth-word" id="auth-word" aria-hidden="true"></div>
+        <span class="kicker" data-i18n="auth_kicker"></span>
+        <h1 data-i18n-html="auth_headline"></h1>
+        <p data-i18n="auth_sub"></p>
+      </div>
+      <div class="auth-box">
+        <form class="card" onsubmit="submitAuth(event)">
+          <h2 data-i18n="auth_title"></h2>
+          <label class="field"><span data-i18n="username"></span>
+            <input type="text" id="auth-user" autocomplete="username" required minlength="3" maxlength="40" />
+          </label>
+          <label class="field"><span data-i18n="password"></span>
+            <input type="password" id="auth-pass" autocomplete="current-password" required minlength="6" />
+          </label>
+          <button class="primary big" id="auth-submit" type="submit"></button>
+          <div class="status" id="auth-status"></div>
+          <div style="text-align:center"><button type="button" class="link" id="auth-toggle" onclick="toggleAuthMode()"></button></div>
+        </form>
+      </div>
     </div>
   </section>
 
@@ -104,31 +137,87 @@
     <div id="alerts-list" class="alerts-grid"></div>
   </section>
 
+  <!-- PROFILE -->
+  <section id="view-profile" class="view hidden">
+    <div class="profile-head">
+      <div class="avatar" id="p-avatar"></div>
+      <div class="who">
+        <span class="kicker" data-i18n="nav_profile"></span>
+        <h1 id="p-name"></h1>
+        <div class="meta" id="p-meta"></div>
+      </div>
+    </div>
+    <div class="stats" id="p-stats" style="grid-template-columns:repeat(4,minmax(0,1fr))"></div>
+    <div class="profile-grid">
+      <form class="card" onsubmit="saveProfile(event)">
+        <h2 data-i18n="p_about"></h2>
+        <label class="field"><span data-i18n="p_full_name"></span><input type="text" id="p-full-name" maxlength="80" autocomplete="name" /></label>
+        <label class="field"><span data-i18n="p_school"></span><input type="text" id="p-school" maxlength="120" autocomplete="organization" /></label>
+        <label class="field"><span data-i18n="p_subject"></span><input type="text" id="p-subject" maxlength="80" /></label>
+        <p class="small muted" data-i18n="p_name_hint"></p>
+        <div class="row end"><span class="status" id="p-status" style="margin:0"></span><button class="primary" type="submit" data-i18n="save"></button></div>
+      </form>
+      <form class="card" onsubmit="changePassword(event)">
+        <h2 data-i18n="p_password"></h2>
+        <label class="field"><span data-i18n="p_old_password"></span><input type="password" id="p-old" autocomplete="current-password" required /></label>
+        <label class="field"><span data-i18n="p_new_password"></span><input type="password" id="p-new" autocomplete="new-password" required minlength="6" /></label>
+        <p class="small muted" data-i18n="p_password_hint"></p>
+        <div class="row end"><span class="status" id="pw-status" style="margin:0"></span><button class="primary" type="submit" data-i18n="p_change"></button></div>
+      </form>
+      <div class="card wide">
+        <h2 data-i18n="p_look"></h2>
+        <div class="row" id="p-bg"></div>
+        <div class="row" style="margin-top:16px">
+          <span class="muted small" data-i18n="p_username"></span> <b id="p-username"></b>
+          <span class="spacer"></span>
+          <button class="danger" onclick="logout()" data-i18n="logout"></button>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- TEST -->
   <section id="view-test" class="view hidden">
     <button class="link" onclick="goHome()">← <span data-i18n="back"></span></button>
     <h1 id="test-title"></h1>
     <p class="meta" id="test-meta"></p>
 
-    <div class="card accent-top">
-      <h3 data-i18n="share_title"></h3>
-      <div class="share-box">
-        <input type="text" id="share-link" readonly onclick="this.select()" />
-        <button class="primary" onclick="copyLink(this)" data-i18n="copy"></button>
-        <button onclick="showQr()" data-i18n="qr_btn"></button>
-        <a class="btn" id="share-open" target="_blank" rel="noopener" data-i18n="open_link"></a>
-      </div>
-      <p class="small muted" id="share-hint" style="margin:10px 0 0"></p>
-    </div>
-
     <div class="tabs">
+      <button data-tab="overview" onclick="showTab('overview')" data-i18n="tab_overview"></button>
       <button data-tab="questions" onclick="showTab('questions')" data-i18n="tab_questions"></button>
       <button data-tab="settings" onclick="showTab('settings')" data-i18n="tab_settings"></button>
       <button data-tab="results" onclick="showTab('results')" data-i18n="tab_results"></button>
     </div>
 
+    <!-- overview tab: the test's own page; no answers here, safe to show on a projector -->
+    <div id="tab-overview" class="tab hidden">
+      <div class="overview">
+        <div class="card accent-top share-card">
+          <h2 data-i18n="share_title"></h2>
+          <div class="share-url" id="share-url"></div>
+          <input type="text" id="share-link" class="hidden" readonly />
+          <div class="row">
+            <button class="primary" onclick="copyLink(this)" data-i18n="copy"></button>
+            <button onclick="showQr()" data-i18n="qr_full"></button>
+            <a class="btn" id="share-open" target="_blank" rel="noopener" data-i18n="open_link"></a>
+          </div>
+          <p class="small muted" id="share-hint" style="margin:0"></p>
+          <div class="open-toggle">
+            <button class="toggle" id="open-toggle" role="switch" aria-checked="false" onclick="toggleOpen()" aria-labelledby="open-label"></button>
+            <div><b id="open-label" data-i18n="s_open"></b><span class="small muted" id="open-state"></span></div>
+          </div>
+        </div>
+        <div class="card qr-card">
+          <h2 data-i18n="qr_title"></h2>
+          <div id="qr-inline"></div>
+          <p class="small muted" data-i18n="qr_hint" style="margin:0"></p>
+        </div>
+        <div class="mini-stats" id="overview-stats"></div>
+      </div>
+    </div>
+
     <!-- questions tab -->
-    <div id="tab-questions" class="tab">
+    <div id="tab-questions" class="tab hidden">
       <div class="card">
         <div class="row" style="margin-bottom:6px">
           <h2 style="margin:0" data-i18n="topics"></h2>
@@ -145,6 +234,10 @@
         <p class="small muted" style="margin:0 0 4px">( <span data-i18n="types_hint"></span> )</p>
         <div id="topics-list"></div>
         <button class="primary" style="margin-top:12px" id="gen-all-btn" onclick="generateAll()" data-i18n="generate_all"></button>
+      </div>
+      <div class="answers-bar" id="answers-bar">
+        <span class="meta" id="answers-note"></span>
+        <button id="answers-btn" onclick="toggleAnswers()"></button>
       </div>
       <div id="questions-list"></div>
     </div>
@@ -206,7 +299,8 @@
 
 <div id="modal-root"></div>
 
-<script src="/i18n.js?v=8"></script>
-<script src="/app.js?v=8"></script>
+<script src="/i18n.js?v=11"></script>
+<script src="/bg.js?v=11"></script>
+<script src="/app.js?v=11"></script>
 </body>
 </html>

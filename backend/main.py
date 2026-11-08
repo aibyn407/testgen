@@ -35,6 +35,7 @@ JPEG_DATA_URL = re.compile(r"data:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}")
 # attempts.violation: why a test ended with 0 points
 VIOLATION_LEFT_PAGE = 1
 VIOLATION_PHONE = 2
+VIOLATION_CAMERA = 3  # lens covered or the student left the camera's view
 QUESTION_TYPES = {"multiple_choice", "open", "matching"}
 
 db.init_db()
@@ -142,7 +143,62 @@ def login(body: Credentials):
 
 @app.get("/api/auth/me")
 def me(user: dict = Depends(auth.current_user)):
-    return {"username": user["username"]}
+    with db.get_conn() as c:
+        row = c.one("SELECT full_name FROM users WHERE id = ?", (user["id"],))
+    return {"username": user["username"], "full_name": row["full_name"] if row else None}
+
+
+# ---------- teacher: profile ----------
+
+@app.get("/api/profile")
+def get_profile(user: dict = Depends(auth.current_user)):
+    with db.get_conn() as c:
+        profile = c.one("SELECT username, full_name, school, subject, created_at FROM users WHERE id = ?",
+                        (user["id"],))
+        stats = c.one(
+            """SELECT
+                 (SELECT COUNT(*) FROM tests WHERE owner_id = ?) AS tests,
+                 (SELECT COUNT(*) FROM questions q JOIN topics tp ON tp.id = q.topic_id
+                    JOIN tests t ON t.id = tp.test_id WHERE t.owner_id = ?) AS questions,
+                 (SELECT COUNT(*) FROM attempts a JOIN tests t ON t.id = a.test_id WHERE t.owner_id = ?) AS attempts,
+                 (SELECT AVG(a.percent) FROM attempts a JOIN tests t ON t.id = a.test_id WHERE t.owner_id = ?) AS avg_percent,
+                 (SELECT COUNT(*) FROM alerts a JOIN tests t ON t.id = a.test_id WHERE t.owner_id = ?) AS alerts""",
+            (user["id"],) * 5,
+        )
+    return {**profile, "stats": stats}
+
+
+class ProfileUpdate(BaseModel):
+    full_name: Optional[str] = Field(None, max_length=80)
+    school: Optional[str] = Field(None, max_length=120)
+    subject: Optional[str] = Field(None, max_length=80)
+
+
+@app.patch("/api/profile")
+def update_profile(body: ProfileUpdate, user: dict = Depends(auth.current_user)):
+    changes = body.model_dump(exclude_none=True)
+    with db.get_conn() as c:
+        for key, value in changes.items():  # keys come from the pydantic model, not the user
+            c.execute(f"UPDATE users SET {key} = ? WHERE id = ?", (value.strip() or None, user["id"]))
+    return {"ok": True}
+
+
+class PasswordChange(BaseModel):
+    old_password: str = Field(min_length=1, max_length=100)
+    new_password: str = Field(min_length=6, max_length=100)
+
+
+@app.post("/api/profile/password")
+def change_password(body: PasswordChange, user: dict = Depends(auth.current_user)):
+    with db.get_conn() as c:
+        row = c.one("SELECT password_hash FROM users WHERE id = ?", (user["id"],))
+        if not auth.verify_password(body.old_password, row["password_hash"]):
+            raise HTTPException(400, "wrong_password")
+        c.execute("UPDATE users SET password_hash = ? WHERE id = ?", (auth.hash_password(body.new_password), user["id"]))
+        # sign out everywhere else; this session stays
+        c.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?",
+                  (user["id"], auth.token_hash(user["token"])))
+    return {"ok": True}
 
 
 @app.post("/api/auth/logout")
@@ -481,6 +537,7 @@ def public_test(code: str):
     with db.get_conn() as c:
         test = _public_test(c, code)
         questions = _test_questions(c, test["id"]) if test["is_open"] else []
+        teacher = c.one("SELECT full_name FROM users WHERE id = ?", (test["owner_id"],))
 
     questions = _student_selection(questions, test["question_limit"], bool(test["shuffle"]))
 
@@ -495,6 +552,7 @@ def public_test(code: str):
 
     return {
         "title": test["title"],
+        "teacher": teacher["full_name"] if teacher else None,
         "language": test["language"],
         "is_open": bool(test["is_open"]),
         "time_limit": test["time_limit"],
@@ -527,7 +585,7 @@ def _locked_seconds(c, test: dict, name: str, group: str) -> int:
     for r in rows:
         if not (_same_student(r["student_name"], name) and _same_student(r["student_group"] or "", group)):
             continue
-        if r["violation"] == VIOLATION_PHONE:
+        if r["violation"] in (VIOLATION_PHONE, VIOLATION_CAMERA):
             if test["phone_penalty"] == "ban":
                 return FOREVER
             minutes = test["phone_lock_minutes"] if test["phone_penalty"] == "lock" else 0
@@ -563,7 +621,7 @@ class SubmitReq(BaseModel):
     answers: dict  # {question_id: answer}
     duration_sec: Optional[int] = Field(None, ge=0)
     violation: bool = False  # the test ended for cheating: recorded as 0 points
-    violation_reason: Literal["left_page", "phone"] = "left_page"
+    violation_reason: Literal["left_page", "phone", "camera"] = "left_page"
     proctor_events: list[ProctorEvent] = Field(default_factory=list, max_length=300)
 
 
@@ -612,7 +670,8 @@ def submit(code: str, body: SubmitReq):
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (test["id"], body.student_name.strip(), body.student_group.strip(), score, total, percent,
              g["letter"], json.dumps(details, ensure_ascii=False), body.duration_sec,
-             (VIOLATION_PHONE if body.violation_reason == "phone" else VIOLATION_LEFT_PAGE) if body.violation else 0,
+             {"phone": VIOLATION_PHONE, "camera": VIOLATION_CAMERA}.get(body.violation_reason, VIOLATION_LEFT_PAGE)
+            if body.violation else 0,
              json.dumps(events) if proctored else None, scoring.suspicion(events) if proctored else None,
              db.now()),
         )
@@ -626,7 +685,7 @@ def submit(code: str, body: SubmitReq):
 class AlertReq(BaseModel):
     student_name: str = Field(min_length=2, max_length=80)
     student_group: str = Field("", max_length=40)
-    type: Literal["phone"] = "phone"
+    type: Literal["phone", "covered", "no_face"] = "phone"
     image: Optional[str] = Field(None, max_length=MAX_ALERT_IMAGE)  # data:image/jpeg;base64,...
 
 

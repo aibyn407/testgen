@@ -25,7 +25,7 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(check, digest)
 
 
-def _token_hash(token: str) -> str:
+def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
@@ -34,14 +34,14 @@ def create_session(user_id: int) -> str:
     with db.get_conn() as c:
         c.execute(
             "INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)",
-            (_token_hash(token), user_id, db.now()),
+            (token_hash(token), user_id, db.now()),
         )
     return token
 
 
 def delete_session(token: str):
     with db.get_conn() as c:
-        c.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
+        c.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash(token),))
 
 
 def _bearer(authorization: str | None) -> str | None:
@@ -59,7 +59,7 @@ def current_user(authorization: str | None = Header(None)) -> dict:
         user = c.one(
             """SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id
                WHERE s.token_hash = ?""",
-            (_token_hash(token),),
+            (token_hash(token),),
         )
     if not user:
         raise HTTPException(401, "auth_required")

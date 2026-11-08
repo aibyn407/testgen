@@ -80,6 +80,7 @@ PROCTOR_WEIGHTS = {
     "multi_face": 25,   # someone else is in the frame
     "phone": 30,        # a phone was seen
     "camera_off": 30,   # the camera was switched off during the test
+    "covered": 40,      # the lens was covered
 }
 
 

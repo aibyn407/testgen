@@ -251,3 +251,43 @@ def test_phone_penalty_lock_and_ban(client, teacher, ready_test):
     assert attempt["violation"] == 2
     client.delete(f"/api/attempts/{attempt['id']}", headers=teacher)
     assert client.post(lock_url, json=student).json()["banned"] is False
+
+
+def test_teacher_profile_and_password_change(client, teacher, ready_test):
+    _, code = ready_test
+    p = client.get("/api/profile", headers=teacher).json()
+    assert p["full_name"] is None and p["stats"]["tests"] == 1 and p["stats"]["questions"] > 0
+
+    client.patch("/api/profile", headers=teacher,
+                 json={"full_name": "Айбын Бекжан", "school": "ҚазҰТЗУ", "subject": "Киберқауіпсіздік"})
+    p = client.get("/api/profile", headers=teacher).json()
+    assert (p["full_name"], p["school"], p["subject"]) == ("Айбын Бекжан", "ҚазҰТЗУ", "Киберқауіпсіздік")
+    assert client.get(f"/api/public/{code}").json()["teacher"] == "Айбын Бекжан"
+
+    username = p["username"]
+    other_session = client.post("/api/auth/login", json={"username": username, "password": "secret123"}).json()["token"]
+    assert client.post("/api/profile/password", headers=teacher,
+                       json={"old_password": "wrong", "new_password": "newsecret1"}).status_code == 400
+    assert client.post("/api/profile/password", headers=teacher,
+                       json={"old_password": "secret123", "new_password": "newsecret1"}).status_code == 200
+    # this session still works, the other one was signed out, the new password works
+    assert client.get("/api/auth/me", headers=teacher).status_code == 200
+    assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {other_session}"}).status_code == 401
+    assert client.post("/api/auth/login", json={"username": username, "password": "newsecret1"}).status_code == 200
+
+
+def test_camera_violation_locks_like_a_phone(client, teacher, ready_test):
+    test_id, code = ready_test
+    client.patch(f"/api/tests/{test_id}", headers=teacher,
+                 json={"proctoring": True, "phone_penalty": "lock", "phone_lock_minutes": 20})
+    student = {"student_name": "Бекзат", "student_group": "Б-2"}
+    assert client.post(f"/api/public/{code}/alert", json={**student, "type": "covered"}).json() == {"ok": True}
+    assert client.post(f"/api/public/{code}/alert", json={"student_name": "Дана", "type": "no_face"}).json() == {"ok": True}
+    assert client.post(f"/api/public/{code}/alert", json={"student_name": "Х", "type": "nonsense"}).status_code == 422
+    assert {a["type"] for a in client.get("/api/alerts", headers=teacher).json()["alerts"]} == {"covered", "no_face"}
+
+    r = client.post(f"/api/public/{code}/submit",
+                    json={**student, "answers": {}, "violation": True, "violation_reason": "camera"})
+    assert r.json()["score"] == 0
+    assert 15 * 60 < client.post(f"/api/public/{code}/lock", json=student).json()["locked_seconds"] <= 20 * 60
+    assert client.get(f"/api/tests/{test_id}/results", headers=teacher).json()["attempts"][0]["violation"] == 3

@@ -124,6 +124,9 @@ MIGRATIONS = [
     ("tests", "phone_detect", "INTEGER NOT NULL DEFAULT 1"),
     ("tests", "phone_penalty", "TEXT NOT NULL DEFAULT 'lock'"),
     ("tests", "phone_lock_minutes", "INTEGER NOT NULL DEFAULT 15"),
+    ("users", "full_name", "TEXT"),
+    ("users", "school", "TEXT"),
+    ("users", "subject", "TEXT"),
 ]
 
 

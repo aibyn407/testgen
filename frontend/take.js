@@ -5,6 +5,8 @@ const DRAFT_KEY = "draft_" + CODE;
 const LOCK_KEY = "lock_" + CODE;
 const BAN_KEY = "ban_" + CODE;
 const ALARM_SECONDS = 10;
+const FACE_WARN_AFTER = 3000;   // out of the frame this long: a warning with a countdown
+const FACE_LIMIT_SECONDS = 10;  // ...and when the countdown ends, the test is closed
 let TEST = null;      // public test info
 let DRAFT = null;     // {questions, answers, name, group, startedAt, idx, qStartedAt}
 let timerId = null;
@@ -55,11 +57,11 @@ function showLocked(until, reasonKey) {
   showOnly("message");
 }
 
-function showBanned(justCaught) {
+function showBanned(reasonKey) {
   const m = document.getElementById("message");
   m.dataset.key = "";
   m.dataset.gate = "";
-  m.innerHTML = `${justCaught ? `<p class="status err">${escapeHtml(t("phone_caught"))}</p>` : ""}
+  m.innerHTML = `${reasonKey ? `<p class="status err">${escapeHtml(t(reasonKey))}</p>` : ""}
     <div class="lock-time">⛔</div><p>${escapeHtml(t("banned"))}</p>`;
   showOnly("message");
 }
@@ -111,8 +113,10 @@ async function init() {
 function renderStartMeta() {
   document.getElementById("start-title").textContent = TEST.title;
   const time = TEST.time_limit ? `${TEST.time_limit} ${t("minutes")}` : t("no_limit");
-  document.getElementById("start-meta").textContent =
-    `${t("questions_total")}: ${TEST.questions.length} · ${t("time_limit")}: ${time}`;
+  document.getElementById("start-meta").textContent = [
+    TEST.teacher ? `${t("teacher_label")}: ${TEST.teacher}` : "",
+    `${t("questions_total")}: ${TEST.questions.length}`, `${t("time_limit")}: ${time}`,
+  ].filter(Boolean).join(" · ");
   document.getElementById("start-rules").innerHTML = rulesHtml();
 }
 
@@ -120,7 +124,7 @@ function rulesHtml() {
   const rules = [];
   if (stepMode()) rules.push(t("rule_qtime").replace("{s}", TEST.question_time));
   if (TEST.anti_cheat) rules.push(t("rule_anticheat").replace("{m}", TEST.lock_minutes));
-  if (TEST.proctoring) rules.push(t("rule_camera"));
+  if (TEST.proctoring) rules.push(t("rule_camera"), t("rule_face"));
   if (TEST.proctoring) rules.push(t("rule_phone_" + TEST.phone_penalty).replace("{m}", TEST.phone_lock_minutes));
   return rules.map(r => `<li>${escapeHtml(r)}</li>`).join("");
 }
@@ -148,8 +152,9 @@ async function startTest(e) {
     btn.disabled = true;
     Alarm.unlock();
     try { await Proctor.requestCamera(); }
-    catch (err) { status.textContent = t(cameraErrorKey(err)); return; }
-    finally { btn.disabled = false; }
+    catch (err) { status.textContent = t(cameraErrorKey(err)); btn.disabled = false; return; }
+    await waitForAI(btn);
+    btn.disabled = false;
   }
   const now = Date.now();
   DRAFT = { questions: TEST.questions, answers: {}, name, group, startedAt: now, idx: 0, qStartedAt: now,
@@ -176,13 +181,15 @@ function startProctor() {
   if (!DRAFT.proctorEvents) DRAFT.proctorEvents = [];
   Proctor.onChange = saveDraft;
   Proctor.phoneMode = !!TEST.phone_detect;
-  Proctor.onPhone = onPhoneSeen;
+  Proctor.onPhone = image => onCameraViolation("phone", image);
+  Proctor.onCovered = image => onCameraViolation("covered", image);
+  Proctor.onStatus = watchFace;
   Proctor.onCameraLost = () => {
     document.getElementById("cam-box").classList.add("hidden");
     if (!submitting) showCameraGate("camera_lost");
   };
   document.getElementById("cam-box").classList.remove("hidden");
-  Proctor.start(document.getElementById("cam-video"), DRAFT.startedAt, DRAFT.proctorEvents);
+  Proctor.start(document.getElementById("cam-video"), DRAFT.startedAt, DRAFT.proctorEvents, document.getElementById("cam-overlay"));
 }
 
 function stopProctor() {
@@ -200,10 +207,27 @@ function showCameraGate(key) {
   showOnly("message");
 }
 
+// The test starts only once the AI watcher is fully loaded, so no minute goes unwatched.
+// On a very slow connection it gives up waiting after a while rather than block the student.
+async function waitForAI(btn) {
+  if (Proctor.fullyReady()) return;
+  const label = btn ? btn.textContent : "";
+  if (btn) btn.innerHTML = `<span class="spinner"></span> ${escapeHtml(t("ai_loading"))}`;
+  await Promise.race([Proctor.preload(), new Promise(r => setTimeout(r, 45000))]);
+  if (btn) btn.textContent = label;
+}
+
 async function retryCamera() {
   Alarm.unlock();
   try { await Proctor.requestCamera(); }
   catch (err) { showCameraGate(cameraErrorKey(err)); return; }
+  if (!Proctor.fullyReady()) {
+    const m = document.getElementById("message");
+    m.dataset.key = ""; m.dataset.gate = "";
+    m.innerHTML = `<span class="spinner"></span><p>${escapeHtml(t("ai_loading"))}</p>`;
+    showOnly("message");
+    await waitForAI();
+  }
   if (quizOpen) { showOnly("view-quiz"); startProctor(); }
   else openQuiz();
 }
@@ -329,21 +353,51 @@ function onMainButton() {
   else submitAnswers(false);
 }
 
-// A phone in the camera: siren, a snapshot to the teacher, and (unless the teacher chose
-// "alarm only") the test ends with 0 points.
-function onPhoneSeen(image) {
+// A camera violation (a phone, a covered lens, or the student gone from the frame): siren,
+// a snapshot to the teacher, and (unless the teacher chose "alarm only") the test ends with 0 points.
+function onCameraViolation(kind, image) {
   if (submitting || !quizOpen) return;
+  hideFaceWarn();
   fetch(`/api/public/${encodeURIComponent(CODE)}/alert`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ student_name: DRAFT.name, student_group: DRAFT.group || "", type: "phone", image }),
+    body: JSON.stringify({ student_name: DRAFT.name, student_group: DRAFT.group || "", type: kind, image }),
   }).catch(() => {});
   Alarm.play(ALARM_SECONDS);
-  showPhoneAlarm();
-  if (TEST.phone_penalty !== "alarm") endForCheating("phone");
+  showAlarm(kind);
+  if (TEST.phone_penalty !== "alarm") endForCheating(kind === "phone" ? "phone" : "camera");
 }
 
-function showPhoneAlarm() {
+// The student's face must stay in the frame: after a few seconds away a countdown starts.
+let faceGoneSince = 0, faceWarnTimer = null;
+function watchFace({ faces, covered, loading }) {
+  if (submitting || !quizOpen || loading) return;
+  document.getElementById("cam-box").classList.toggle("lost", faces === 0 || covered);
+  if (faces > 0 || covered) { faceGoneSince = 0; hideFaceWarn(); return; }  // a covered lens has its own rule
+  const now = Date.now();
+  if (!faceGoneSince) faceGoneSince = now;
+  if (now - faceGoneSince < FACE_WARN_AFTER || faceWarnTimer) return;
+  const until = faceGoneSince + FACE_WARN_AFTER + FACE_LIMIT_SECONDS * 1000;
+  const el = document.createElement("div");
+  el.id = "face-warn"; el.className = "face-warn"; el.setAttribute("role", "alert");
+  document.body.appendChild(el);
+  const tick = () => {
+    const left = Math.ceil((until - Date.now()) / 1000);
+    if (left <= 0) { const img = Proctor.snapshot(); hideFaceWarn(); faceGoneSince = 0; onCameraViolation("no_face", img); return; }
+    el.innerHTML = `<div><h1>${escapeHtml(t("face_warn_title"))}</h1><p>${escapeHtml(t("face_warn_text"))}</p>
+      <div class="phone-alarm-left">${left}</div></div>`;
+  };
+  tick();
+  faceWarnTimer = setInterval(tick, 250);
+}
+function hideFaceWarn() {
+  clearInterval(faceWarnTimer); faceWarnTimer = null;
+  const el = document.getElementById("face-warn");
+  if (el) el.remove();
+}
+
+const ALARM_ICON = { phone: "📵", covered: "🚫", no_face: "👤" };
+function showAlarm(kind) {
   let el = document.getElementById("phone-alarm");
   if (!el) {
     el = document.createElement("div");
@@ -355,8 +409,8 @@ function showPhoneAlarm() {
   const tick = () => {
     const left = Math.ceil((until - Date.now()) / 1000);
     if (left <= 0) { clearInterval(el._timer); el.remove(); return; }
-    el.innerHTML = `<div class="phone-alarm-box"><div class="phone-alarm-icon">📵</div>
-      <h1>${escapeHtml(t("phone_alarm_title"))}</h1><p>${escapeHtml(t("phone_alarm_text"))}</p>
+    el.innerHTML = `<div class="phone-alarm-box"><div class="phone-alarm-icon">${ALARM_ICON[kind]}</div>
+      <h1>${escapeHtml(t("alarm_" + kind + "_title"))}</h1><p>${escapeHtml(t("alarm_" + kind + "_text"))}</p>
       <div class="phone-alarm-left">${left}</div></div>`;
   };
   clearInterval(el._timer);
@@ -372,6 +426,7 @@ function onLeavePage() {
 
 function endForCheating(reason) {
   submitting = true;
+  hideFaceWarn();
   stopProctor();
   clearInterval(timerId);
   clearInterval(qTimerId);
@@ -388,10 +443,11 @@ function endForCheating(reason) {
     }),
   }).catch(() => {});
   clearDraft();
-  if (reason === "phone" && TEST.phone_penalty === "ban") { setBanned(); showBanned(true); return; }
-  const minutes = reason === "phone" ? TEST.phone_lock_minutes : TEST.lock_minutes;
+  const byCamera = reason === "phone" || reason === "camera";
+  if (byCamera && TEST.phone_penalty === "ban") { setBanned(); showBanned(reason === "phone" ? "phone_caught" : "camera_caught"); return; }
+  const minutes = byCamera ? TEST.phone_lock_minutes : TEST.lock_minutes;
   setLock(Date.now() + minutes * 60 * 1000);
-  showLocked(lockUntil(), reason === "left_page" ? "left_page" : "phone_caught");
+  showLocked(lockUntil(), { left_page: "left_page", phone: "phone_caught", camera: "camera_caught" }[reason]);
 }
 
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") onLeavePage(); });
@@ -468,4 +524,5 @@ function showResult(res, auto) {
 }
 
 applyI18n();
+TGBg.init();
 init();

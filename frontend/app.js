@@ -5,7 +5,9 @@ const S = {
   username: storageGet("username"),
   authMode: "login",
   testId: null,
-  tab: "questions",
+  tab: "overview",
+  showAnswers: false,  // answers stay hidden until the teacher asks, so the screen is safe to project
+  fullName: null,
   data: null,      // {test, topics, questions}
   results: null,
   editing: null,   // question id being edited
@@ -32,18 +34,60 @@ function show(id) {
 
 function route() {
   const signedIn = !!S.token;
-  document.getElementById("logout-btn").classList.toggle("hidden", !signedIn);
-  const chip = document.getElementById("user-chip");
-  chip.classList.toggle("hidden", !signedIn);
-  chip.textContent = S.username || "";
-  document.getElementById("alerts-btn").classList.toggle("hidden", !signedIn);
-  if (!signedIn) { stopAlertPolling(); renderAuth(); show("view-auth"); return; }
+  ["user-chip", "alerts-btn", "burger", "top-links"].forEach(id =>
+    document.getElementById(id).classList.toggle("hidden", !signedIn));
+  toggleMenu(false);
+  if (!signedIn) {
+    stopAlertPolling(); renderAuth(); show("view-auth");
+    TGParticles.anchor = () => {  // the word fills the empty block above the headline
+      const r = document.getElementById("auth-word").getBoundingClientRect();
+      return { x: (r.left + r.width / 2) / innerWidth, y: (r.top + r.height / 2) / innerHeight, w: r.width / innerWidth, h: r.height / innerHeight };
+    };
+    TGParticles.start(document.getElementById("particles"), "ТЕСТ", ["text", "text", "ice", "gold"]);
+    return;
+  }
+  TGParticles.stop();
   startAlertPolling();
+  updateUserChip();
+  if (S.fullName === null) loadMe();
 
   const m = location.hash.match(/^#\/test\/(\d+)(?:\/(\w+))?/);
-  if (location.hash === "#/alerts") { S.testId = null; S.data = null; show("view-alerts"); renderAlerts(); }
-  else if (m) openTest(Number(m[1]), m[2] || "questions");
+  const page = location.hash === "#/alerts" ? "alerts" : location.hash === "#/profile" ? "profile" : m ? "test" : "home";
+  document.querySelectorAll("#top-links a").forEach(a => a.classList.toggle("active", a.dataset.nav === page));
+  if (page === "alerts") { S.testId = null; S.data = null; show("view-alerts"); renderAlerts(); }
+  else if (page === "profile") { S.testId = null; S.data = null; show("view-profile"); loadProfile(); }
+  else if (m) openTest(Number(m[1]), m[2] || "overview");
   else { S.testId = null; S.data = null; show("view-home"); loadTests(); }
+  window.scrollTo(0, 0);
+}
+
+// ---------- menu & user chip ----------
+
+function toggleMenu(open) {
+  open = open ?? !document.body.classList.contains("menu-open");
+  document.body.classList.toggle("menu-open", open);
+  document.getElementById("burger").setAttribute("aria-expanded", String(open));
+  document.getElementById("menu").setAttribute("aria-hidden", String(!open));
+  if (open) document.getElementById("menu-bg").innerHTML = TGBg.pickerHtml();
+}
+
+function menuGo(hash, focusUpload) {
+  toggleMenu(false);
+  if (location.hash === hash || (!hash && !location.hash)) route(); else location.hash = hash;
+  if (focusUpload) setTimeout(() => document.getElementById("upload-btn").scrollIntoView({ behavior: "smooth", block: "center" }), 200);
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape" && document.body.classList.contains("menu-open")) toggleMenu(false); });
+
+function initials(name) {
+  return (name || "").trim().split(/\s+/).slice(0, 2).map(w => w[0] || "").join("").toUpperCase() || "?";
+}
+
+function updateUserChip() {
+  document.getElementById("user-chip").textContent = initials(S.fullName || S.username);
+}
+
+async function loadMe() {
+  try { S.fullName = (await api("GET", "/api/auth/me")).full_name || ""; updateUserChip(); } catch {}
 }
 window.addEventListener("hashchange", route);
 
@@ -53,6 +97,7 @@ function onLangChange() {
   if (!document.getElementById("view-auth").classList.contains("hidden")) renderAuth();
   else if (S.testId && !document.getElementById("view-test").classList.contains("hidden")) renderTest();
   else if (!document.getElementById("view-alerts").classList.contains("hidden")) renderAlerts();
+  else if (!document.getElementById("view-profile").classList.contains("hidden")) renderProfile();
   else if (S.token) loadTests();
 }
 
@@ -85,14 +130,16 @@ async function submitAuth(e) {
     S.token = res.token; S.username = res.username;
     storageSet("token", res.token); storageSet("username", res.username);
     document.getElementById("auth-pass").value = "";
-    route();
+    S.fullName = null;
+    TGParticles.morph("AI", ["gold", "accent"]);
+    setTimeout(route, REDUCED_MOTION ? 0 : 700);
   } catch (err) {
     status.className = "status err"; status.textContent = err.message;
   } finally { btn.disabled = false; }
 }
 
 function signOutLocal() {
-  S.token = null; S.username = null;
+  S.token = null; S.username = null; S.fullName = null; S.profile = null;
   storageSet("token", null); storageSet("username", null);
 }
 
@@ -212,7 +259,7 @@ async function uploadFile() {
     const res = await api("POST", "/api/upload", fd, { isForm: true });
     status.textContent = "";
     fileEl.value = ""; textEl.value = ""; topicEl.value = ""; document.getElementById("title-input").value = ""; onFilePicked();
-    location.hash = `#/test/${res.test_id}`;
+    location.hash = `#/test/${res.test_id}/questions`;  // a new test needs questions first
   } catch (e) {
     status.className = "status err"; status.textContent = e.message;
   } finally { btn.disabled = false; }
@@ -223,12 +270,12 @@ async function uploadFile() {
 async function openTest(id, tab) {
   show("view-test");
   if (S.testId !== id || !S.data) {
-    S.testId = id; S.data = null; S.results = null;
+    S.testId = id; S.data = null; S.results = null; S.showAnswers = false;
     document.getElementById("test-title").textContent = "…";
     try { S.data = await api("GET", `/api/tests/${id}`); }
     catch (e) { alert(e.message); goHome(); return; }
   }
-  S.tab = ["questions", "settings", "results"].includes(tab) ? tab : "questions";
+  S.tab = ["overview", "questions", "settings", "results"].includes(tab) ? tab : "overview";
   renderTest();
 }
 
@@ -254,9 +301,48 @@ function renderTest() {
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === S.tab));
   document.querySelectorAll(".tab").forEach(el => el.classList.toggle("hidden", el.id !== "tab-" + S.tab));
 
+  if (S.tab === "overview") renderOverview();
   if (S.tab === "questions") renderQuestionsTab();
   if (S.tab === "settings") renderSettings();
   if (S.tab === "results") loadResults();
+}
+
+// ---------- overview: link, QR, open/closed, numbers; never the answers ----------
+
+async function renderOverview() {
+  const { test, questions } = S.data;
+  document.getElementById("share-url").textContent = shareUrl().replace(/^https?:\/\//, "");
+  const tg = document.getElementById("open-toggle");
+  tg.setAttribute("aria-checked", String(!!test.is_open));
+  document.getElementById("open-state").textContent = " — " + t(test.is_open ? "open_state_on" : "open_state_off");
+  const qr = document.getElementById("qr-inline");
+  qr.innerHTML = "";
+  if (window.qrcode) qr.appendChild(qrCanvas(shareUrl(), 10, 3));
+
+  const box = document.getElementById("overview-stats");
+  const tiles = (attempts, avg) => `
+    <div class="stat"><div class="v">${questions.length}</div><div class="l">${t("questions_n")}</div></div>
+    <div class="stat"><div class="v">${attempts}</div><div class="l">${t("stat_attempts")}</div></div>
+    <div class="stat"><div class="v">${avg}</div><div class="l">${t("stat_avg")}</div></div>
+    <div class="stat clickable" onclick="showTab('results')"><div class="v">→</div><div class="l">${t("tab_results")}</div></div>`;
+  box.innerHTML = tiles("…", "…");
+  try {
+    if (!S.results) S.results = await api("GET", `/api/tests/${S.testId}/results`);
+    const a = S.results.attempts;
+    const avg = a.length ? Math.round(a.reduce((s, x) => s + x.percent, 0) / a.length) + "%" : "—";
+    if (S.tab === "overview") box.innerHTML = tiles(a.length, avg);
+  } catch {}
+}
+
+async function toggleOpen() {
+  const next = !S.data.test.is_open;
+  const tg = document.getElementById("open-toggle");
+  tg.setAttribute("aria-checked", String(next));
+  try {
+    await api("PATCH", `/api/tests/${S.testId}`, { is_open: next });
+    S.data.test.is_open = next ? 1 : 0;
+    renderTest();
+  } catch (e) { tg.setAttribute("aria-checked", String(!next)); alert(e.message); }
 }
 
 async function copyLink(btn) {
@@ -315,6 +401,9 @@ function renderQuestionsTab() {
     </div>`).join("");
 
   const box = document.getElementById("questions-list");
+  document.getElementById("answers-bar").classList.toggle("hidden", !questions.length);
+  document.getElementById("answers-note").textContent = t(S.showAnswers ? "answers_shown_note" : "answers_hidden_note");
+  document.getElementById("answers-btn").textContent = t(S.showAnswers ? "answers_hide" : "answers_show");
   if (!questions.length) { box.innerHTML = `<div class="card muted">${t("no_questions")}</div>`; return; }
 
   let html = "", lastTopic = null, n = 0;
@@ -331,9 +420,19 @@ function renderQuestionsTab() {
 
 function typePill(type) { return `<span class="pill type">${t("type_" + type)}</span>`; }
 
+function toggleAnswers() {
+  S.showAnswers = !S.showAnswers;
+  renderQuestionsTab();
+}
+
 function renderQuestionCard(q, n) {
   let body = "";
-  if (q.type === "multiple_choice") {
+  const hidden = `<li class="hidden-answer">${t("answer_hidden")}</li>`;
+  if (!S.showAnswers) {
+    if (q.type === "multiple_choice") body = `<ul class="opt-list">${q.options.map(o => `<li>${escapeHtml(o)}</li>`).join("")}</ul>`;
+    else if (q.type === "open") body = `<ul class="opt-list">${hidden}</ul>`;
+    else body = `<ul class="opt-list">${q.options.left.map(k => `<li>${escapeHtml(k)} → ?</li>`).join("")}</ul>`;
+  } else if (q.type === "multiple_choice") {
     body = `<ul class="opt-list">${q.options.map(o =>
       `<li class="${o === q.correct ? "correct" : ""}">${escapeHtml(o)}</li>`).join("")}</ul>`;
   } else if (q.type === "open") {
@@ -559,7 +658,7 @@ function renderResults() {
           <td>${a.score}/${a.total}</td>
           <td>${Math.round(a.percent)}%</td>
           <td><span class="grade g-${a.grade[0]}">${a.grade}</span>
-            ${a.violation ? `<span class="pill off">${t(a.violation === 2 ? "violation_phone" : "violation")}</span>` : ""}</td>
+            ${a.violation ? `<span class="pill off">${t({ 2: "violation_phone", 3: "violation_camera" }[a.violation] || "violation")}</span>` : ""}</td>
           ${proctored ? `<td>${suspicionPill(a.suspicion)}</td>` : ""}
           <td>${fmtDuration(a.duration_sec)}</td>
           <td>${new Date(a.taken_at).toLocaleString()}</td>
@@ -589,7 +688,7 @@ function proctorHtml(a) {
     </div>`;
 }
 
-function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function cssVar(name) { return getComputedStyle(document.body).getPropertyValue(name).trim(); }
 
 function drawCharts(attempts, stats) {
   const accent = cssVar("--accent"), muted = cssVar("--muted"), grid = cssVar("--border");
@@ -645,6 +744,63 @@ async function deleteAttempt(id) {
   catch (e) { alert(e.message); }
 }
 
+// ---------- teacher profile ----------
+
+async function loadProfile() {
+  document.getElementById("p-stats").innerHTML = `<div class="status"><span class="spinner"></span></div>`;
+  try { S.profile = await api("GET", "/api/profile"); renderProfile(); }
+  catch (e) { document.getElementById("p-stats").innerHTML = `<div class="status err">${escapeHtml(e.message)}</div>`; }
+}
+
+function renderProfile() {
+  const p = S.profile;
+  if (!p) return;
+  document.getElementById("p-avatar").textContent = initials(p.full_name || p.username);
+  document.getElementById("p-name").textContent = p.full_name || p.username;
+  document.getElementById("p-meta").textContent = [p.subject, p.school].filter(Boolean).join(" · ") || t("p_fill_hint");
+  document.getElementById("p-username").textContent = p.username;
+  ["full-name", "school", "subject"].forEach(k => {
+    const el = document.getElementById("p-" + k);
+    if (document.activeElement !== el) el.value = p[k.replace("-", "_")] || "";
+  });
+  const st = p.stats;
+  document.getElementById("p-stats").innerHTML = `
+    <div class="stat"><div class="v">${st.tests}</div><div class="l">${t("stat_tests")}</div></div>
+    <div class="stat"><div class="v">${st.questions}</div><div class="l">${t("questions_n")}</div></div>
+    <div class="stat"><div class="v">${st.attempts}</div><div class="l">${t("stat_attempts")}</div></div>
+    <div class="stat"><div class="v">${st.avg_percent == null ? "—" : Math.round(st.avg_percent) + "%"}</div><div class="l">${t("stat_avg")}</div></div>`;
+  document.getElementById("p-bg").innerHTML = TGBg.pickerHtml();
+}
+
+async function saveProfile(e) {
+  e.preventDefault();
+  const status = document.getElementById("p-status");
+  try {
+    await api("PATCH", "/api/profile", {
+      full_name: document.getElementById("p-full-name").value.trim(),
+      school: document.getElementById("p-school").value.trim(),
+      subject: document.getElementById("p-subject").value.trim(),
+    });
+    S.fullName = document.getElementById("p-full-name").value.trim();
+    updateUserChip();
+    await loadProfile();
+    status.className = "status ok"; status.textContent = t("saved");
+  } catch (err) { status.className = "status err"; status.textContent = err.message; }
+}
+
+async function changePassword(e) {
+  e.preventDefault();
+  const status = document.getElementById("pw-status");
+  try {
+    await api("POST", "/api/profile/password", {
+      old_password: document.getElementById("p-old").value,
+      new_password: document.getElementById("p-new").value,
+    });
+    document.getElementById("p-old").value = ""; document.getElementById("p-new").value = "";
+    status.className = "status ok"; status.textContent = t("p_password_changed");
+  } catch (err) { status.className = "status err"; status.textContent = err.message; }
+}
+
 // ---------- phone alerts ----------
 
 const ALERTS = { list: [], lastId: null, unseen: 0, timer: null };
@@ -679,6 +835,9 @@ function updateBell() {
   const badge = document.getElementById("alerts-badge");
   badge.textContent = ALERTS.unseen > 99 ? "99+" : ALERTS.unseen;
   badge.classList.toggle("hidden", !ALERTS.unseen);
+  const mb = document.getElementById("menu-alerts");
+  mb.textContent = `${ALERTS.unseen} ${t("new").toLowerCase()}`;
+  mb.classList.toggle("hidden", !ALERTS.unseen);
   document.getElementById("alerts-btn").classList.toggle("ringing", ALERTS.unseen > 0);
 }
 
@@ -692,14 +851,14 @@ function notifyAlert(a) {
   const el = document.createElement("div");
   el.className = "toast";
   el.innerHTML = `${a.image ? `<img src="${a.image}" alt="" />` : ""}
-    <div><strong>📵 ${escapeHtml(t("phone_alert"))}</strong><div class="small">${escapeHtml(alertLine(a))}</div></div>`;
+    <div><strong>${escapeHtml(t("alert_" + a.type))}</strong><div class="small">${escapeHtml(alertLine(a))}</div></div>`;
   el.onclick = () => { location.hash = "#/alerts"; el.remove(); };
   box.appendChild(el);
   setTimeout(() => el.remove(), 12000);
   beep();
   try {
     if ("Notification" in window && Notification.permission === "granted") {
-      new Notification(`📵 ${t("phone_alert")}`, { body: alertLine(a), icon: a.image || undefined });
+      new Notification(t("alert_" + a.type), { body: alertLine(a), icon: a.image || undefined });
     }
   } catch {}
 }
@@ -740,6 +899,7 @@ async function renderAlerts() {
           <div class="row"><strong>${escapeHtml(a.student_name)}</strong>
             ${a.seen ? "" : `<span class="pill off">${t("new")}</span>`}</div>
           <div class="meta">${escapeHtml(a.student_group || "—")} · ${new Date(a.created_at).toLocaleString()}</div>
+          <div class="small err-text">${escapeHtml(t("alert_" + a.type))}</div>
           <div class="small">${escapeHtml(a.test_title)}</div>
           <div class="row" style="margin-top:8px">
             <button class="small" onclick="location.hash='#/test/${a.test_id}/results'">${t("tab_results")}</button>
@@ -779,4 +939,5 @@ function closeModal() { document.getElementById("modal-root").innerHTML = ""; }
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
 
 applyI18n();
+TGBg.init();
 route();
