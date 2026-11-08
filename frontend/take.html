@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" />
-<link rel="stylesheet" href="/style.css?v=6" />
+<link rel="stylesheet" href="/style.css?v=8" />
 </head>
 <body>
 <header>
@@ -35,7 +35,8 @@
       <label class="field"><span data-i18n="group"></span>
         <input type="text" id="student-group" data-i18n-ph="group_ph" maxlength="40" />
       </label>
-      <button class="primary big" type="submit" data-i18n="start"></button>
+      <div class="status err" id="start-status"></div>
+      <button class="primary big" type="submit" id="start-btn" data-i18n="start"></button>
     </form>
   </section>
 
@@ -59,7 +60,13 @@
   </section>
 </main>
 
-<script src="/i18n.js?v=6"></script>
-<script src="/take.js?v=6"></script>
+<div id="cam-box" class="cam-box hidden">
+  <video id="cam-video" autoplay muted playsinline></video>
+  <span class="cam-status"><i></i><span data-i18n="camera_watching"></span></span>
+</div>
+
+<script src="/i18n.js?v=8"></script>
+<script src="/proctor.js?v=8"></script>
+<script src="/take.js?v=8"></script>
 </body>
 </html>

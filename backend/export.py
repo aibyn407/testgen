@@ -73,7 +73,7 @@ def results_xlsx(title: str, attempts: list[dict]) -> bytes:
     ws["A1"].font = Font(bold=True, size=14)
     ws.append([])
     headers = ["№", "Аты-жөні", "Тобы", "Балл", "Барлығы", "%", "Әріптік баға", "GPA", "Дәстүрлі баға",
-               "Уақыты (мин)", "Тапсырған күні"]
+               "Уақыты (мин)", "Тапсырған күні", "Камера: күдік (%)"]
     ws.append(headers)
     for cell in ws[3]:
         cell.font = Font(bold=True, color="FFFFFF")
@@ -89,10 +89,11 @@ def results_xlsx(title: str, attempts: list[dict]) -> bytes:
             pass
         minutes = round(a["duration_sec"] / 60, 1) if a.get("duration_sec") else ""
         ws.append([i, a["student_name"], a.get("student_group") or "", a["score"], a["total"],
-                   a["percent"], g["letter"], g["gpa"], g["text"], minutes, taken])
+                   a["percent"], g["letter"], g["gpa"], g["text"], minutes, taken,
+                   "" if a.get("suspicion") is None else a["suspicion"]])
 
-    widths = [5, 30, 14, 8, 9, 8, 13, 7, 20, 12, 18]
-    for col, w in zip("ABCDEFGHIJK", widths):
+    widths = [5, 30, 14, 8, 9, 8, 13, 7, 20, 12, 18, 14]
+    for col, w in zip("ABCDEFGHIJKL", widths):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A4"
 

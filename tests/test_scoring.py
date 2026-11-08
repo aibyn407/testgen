@@ -47,3 +47,10 @@ def test_split_topics_by_lectures():
     text = "\n".join(f"ДӘРІС №{i}. Тақырып {i}\n" + "мәтін " * 50 for i in (1, 2, 3))
     topics = parser.split_topics(text)
     assert [t["name"] for t in topics] == ["№1. Тақырып 1", "№2. Тақырып 2", "№3. Тақырып 3"]
+
+
+def test_suspicion_score():
+    assert scoring.suspicion([]) == 0
+    assert scoring.suspicion([{"type": "look_away", "at": 5, "dur": 0}]) == 8
+    assert scoring.suspicion([{"type": "phone", "at": 5, "dur": 30}]) == 60  # long episode counts double
+    assert scoring.suspicion([{"type": "phone", "dur": 30}] * 5) == 100

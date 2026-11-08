@@ -36,10 +36,13 @@ function route() {
   const chip = document.getElementById("user-chip");
   chip.classList.toggle("hidden", !signedIn);
   chip.textContent = S.username || "";
-  if (!signedIn) { renderAuth(); show("view-auth"); return; }
+  document.getElementById("alerts-btn").classList.toggle("hidden", !signedIn);
+  if (!signedIn) { stopAlertPolling(); renderAuth(); show("view-auth"); return; }
+  startAlertPolling();
 
   const m = location.hash.match(/^#\/test\/(\d+)(?:\/(\w+))?/);
-  if (m) openTest(Number(m[1]), m[2] || "questions");
+  if (location.hash === "#/alerts") { S.testId = null; S.data = null; show("view-alerts"); renderAlerts(); }
+  else if (m) openTest(Number(m[1]), m[2] || "questions");
   else { S.testId = null; S.data = null; show("view-home"); loadTests(); }
 }
 window.addEventListener("hashchange", route);
@@ -49,6 +52,7 @@ function goHome() { location.hash = ""; }
 function onLangChange() {
   if (!document.getElementById("view-auth").classList.contains("hidden")) renderAuth();
   else if (S.testId && !document.getElementById("view-test").classList.contains("hidden")) renderTest();
+  else if (!document.getElementById("view-alerts").classList.contains("hidden")) renderAlerts();
   else if (S.token) loadTests();
 }
 
@@ -106,16 +110,33 @@ async function loadTests() {
   list.innerHTML = `<div class="status"><span class="spinner"></span></div>`;
   try {
     const tests = await api("GET", "/api/tests");
+    renderHomeStats(tests);
     if (!tests.length) { list.innerHTML = `<div class="card muted">${t("no_tests")}</div>`; return; }
     list.innerHTML = tests.map(x => `
       <div class="list-item" onclick="location.hash='#/test/${x.id}'">
         <div style="flex:1;min-width:0">
           <div class="title">${escapeHtml(x.title)}</div>
-          <div class="meta">${x.questions_count} ${t("questions_n")} · ${x.attempts_count} ${t("attempts_n")} · ${new Date(x.created_at).toLocaleDateString()}</div>
+          <div class="meta">${x.questions_count} ${t("questions_n")} · ${x.attempts_count} ${t("attempts_n")}${x.avg_percent != null ? ` · ${t("stat_avg")}: ${Math.round(x.avg_percent)}%` : ""} · ${new Date(x.created_at).toLocaleDateString()}</div>
         </div>
+        ${x.proctoring ? `<span class="pill type" title="${t("s_proctoring")}">📷</span>` : ""}
+        ${x.alerts_count ? `<span class="pill off" title="${t("alerts_title")}">📵 ${x.alerts_count}</span>` : ""}
         <span class="pill ${x.is_open ? "ok" : "off"}">${t(x.is_open ? "open" : "closed")}</span>
       </div>`).join("");
   } catch (e) { list.innerHTML = `<div class="status err">${escapeHtml(e.message)}</div>`; }
+}
+
+function renderHomeStats(tests) {
+  const attempts = tests.reduce((n, x) => n + x.attempts_count, 0);
+  const withAvg = tests.filter(x => x.avg_percent != null);
+  const avg = withAvg.length
+    ? withAvg.reduce((s, x) => s + x.avg_percent * x.attempts_count, 0) / attempts : null;
+  const alerts = tests.reduce((n, x) => n + x.alerts_count, 0);
+  document.getElementById("home-stats").innerHTML = `
+    <div class="stat"><div class="v">${tests.length}</div><div class="l">${t("stat_tests")}</div></div>
+    <div class="stat"><div class="v">${attempts}</div><div class="l">${t("stat_attempts")}</div></div>
+    <div class="stat"><div class="v">${avg == null ? "—" : Math.round(avg) + "%"}</div><div class="l">${t("stat_avg")}</div></div>
+    <div class="stat clickable ${alerts ? "alarm" : ""}" onclick="location.hash='#/alerts'">
+      <div class="v">📵 ${alerts}</div><div class="l">${t("stat_phones")}</div></div>`;
 }
 
 function onFilePicked() {
@@ -434,6 +455,11 @@ function renderSettings() {
   document.getElementById("s-show").checked = !!x.show_answers;
   document.getElementById("s-qtime").value = x.question_time;
   document.getElementById("s-anticheat").checked = !!x.anti_cheat;
+  document.getElementById("s-proctoring").checked = !!x.proctoring;
+  document.getElementById("s-phone-detect").checked = !!x.phone_detect;
+  document.getElementById("s-phone-penalty").value = x.phone_penalty;
+  document.getElementById("s-phone-minutes").value = x.phone_lock_minutes;
+  syncPhoneSettings();
   document.getElementById("settings-status").textContent = "";
 }
 
@@ -450,10 +476,20 @@ async function saveSettings(e) {
       show_answers: document.getElementById("s-show").checked,
       question_time: Number(document.getElementById("s-qtime").value) || 0,
       anti_cheat: document.getElementById("s-anticheat").checked,
+      proctoring: document.getElementById("s-proctoring").checked,
+      phone_detect: document.getElementById("s-phone-detect").checked,
+      phone_penalty: document.getElementById("s-phone-penalty").value,
+      phone_lock_minutes: Math.max(1, Number(document.getElementById("s-phone-minutes").value) || 15),
     });
     await reloadTest();
     status.className = "status ok"; status.textContent = t("saved");
   } catch (err) { status.className = "status err"; status.textContent = err.message; }
+}
+
+// Phone options only matter with the camera on; the minutes only for "lock".
+function syncPhoneSettings() {
+  document.getElementById("phone-settings").classList.toggle("hidden", !document.getElementById("s-proctoring").checked);
+  document.getElementById("phone-minutes-row").classList.toggle("hidden", document.getElementById("s-phone-penalty").value !== "lock");
 }
 
 async function download(kind) {
@@ -502,6 +538,7 @@ function renderResults() {
 
   const avg = attempts.reduce((s, a) => s + a.percent, 0) / attempts.length;
   const avgGrade = gradeFromPercent(avg);
+  const proctored = attempts.some(a => a.suspicion != null);
   box.innerHTML = `
     <div class="stats">
       <div class="stat"><div class="v">${attempts.length}</div><div class="l">${t("stat_attempts")}</div></div>
@@ -515,14 +552,15 @@ function renderResults() {
     <div class="card table-wrap">
       <table>
         <thead><tr><th>${t("col_name")}</th><th>${t("col_group")}</th><th>${t("col_score")}</th><th>%</th>
-          <th>${t("col_grade")}</th><th>${t("col_time")}</th><th>${t("col_date")}</th><th></th></tr></thead>
+          <th>${t("col_grade")}</th>${proctored ? `<th>${t("col_camera")}</th>` : ""}<th>${t("col_time")}</th><th>${t("col_date")}</th><th></th></tr></thead>
         <tbody>${attempts.map(a => `<tr>
           <td>${escapeHtml(a.student_name)}</td>
           <td>${escapeHtml(a.student_group || "—")}</td>
           <td>${a.score}/${a.total}</td>
           <td>${Math.round(a.percent)}%</td>
           <td><span class="grade g-${a.grade[0]}">${a.grade}</span>
-            ${a.violation ? `<span class="pill off">${t("violation")}</span>` : ""}</td>
+            ${a.violation ? `<span class="pill off">${t(a.violation === 2 ? "violation_phone" : "violation")}</span>` : ""}</td>
+          ${proctored ? `<td>${suspicionPill(a.suspicion)}</td>` : ""}
           <td>${fmtDuration(a.duration_sec)}</td>
           <td>${new Date(a.taken_at).toLocaleString()}</td>
           <td><button class="small" onclick="viewAttempt(${a.id})">${t("view")}</button>
@@ -531,6 +569,24 @@ function renderResults() {
       </table>
     </div>`;
   if (window.Chart) drawCharts(attempts, question_stats);
+}
+
+function suspicionPill(v) {
+  if (v == null) return "—";
+  const cls = v < 25 ? "ok" : v < 60 ? "warn" : "off";
+  return `<span class="pill ${cls}" title="${t("suspicion")}">${v}%</span>`;
+}
+
+function proctorHtml(a) {
+  if (!a.proctor_events) return "";
+  const evs = a.proctor_events.map(e => `<li><span class="muted">${fmtDuration(e.at)}</span>
+      ${escapeHtml(t("ev_" + e.type))}${e.dur ? ` · ${e.dur} ${t("sec")}` : ""}</li>`).join("");
+  return `<div class="proctor-log">
+      <div class="row"><strong>📷 ${t("proctor_title")}</strong><span class="spacer"></span>
+        ${t("suspicion")}: ${suspicionPill(a.suspicion)}</div>
+      ${evs ? `<ul>${evs}</ul>` : `<p class="small muted">${t("proctor_clean")}</p>`}
+      <p class="small muted">${t("proctor_note")}</p>
+    </div>`;
 }
 
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
@@ -578,6 +634,7 @@ async function viewAttempt(id) {
         <button class="small" onclick="closeModal()">✕</button></div>
       <p class="meta">${escapeHtml(a.student_group || "")} · ${a.score}/${a.total} · ${Math.round(a.percent)}% ·
         <span class="grade g-${a.grade[0]}">${a.grade}</span> (${gradeText(a.grade)})</p>
+      ${proctorHtml(a)}
       ${items}`);
   } catch (e) { alert(e.message); }
 }
@@ -586,6 +643,132 @@ async function deleteAttempt(id) {
   if (!confirm(t("confirm_delete_attempt"))) return;
   try { await api("DELETE", `/api/attempts/${id}`); loadResults(); }
   catch (e) { alert(e.message); }
+}
+
+// ---------- phone alerts ----------
+
+const ALERTS = { list: [], lastId: null, unseen: 0, timer: null };
+
+function startAlertPolling() {
+  if (ALERTS.timer) return;
+  pollAlerts();
+  ALERTS.timer = setInterval(pollAlerts, 5000);
+}
+
+function stopAlertPolling() {
+  clearInterval(ALERTS.timer);
+  Object.assign(ALERTS, { list: [], lastId: null, unseen: 0, timer: null });
+}
+
+async function pollAlerts() {
+  let res;
+  try { res = await api("GET", `/api/alerts?after=${ALERTS.lastId || 0}`); } catch { return; }
+  const first = ALERTS.lastId === null;
+  if (res.alerts.length) {
+    ALERTS.list = [...res.alerts, ...ALERTS.list].slice(0, 60);
+    if (!first) res.alerts.slice().reverse().forEach(notifyAlert);
+  }
+  ALERTS.lastId = ALERTS.list.length ? ALERTS.list[0].id : 0;
+  ALERTS.unseen = res.unseen;
+  const onAlertsPage = !document.getElementById("view-alerts").classList.contains("hidden");
+  if (onAlertsPage && res.alerts.length) renderAlerts();
+  else updateBell();
+}
+
+function updateBell() {
+  const badge = document.getElementById("alerts-badge");
+  badge.textContent = ALERTS.unseen > 99 ? "99+" : ALERTS.unseen;
+  badge.classList.toggle("hidden", !ALERTS.unseen);
+  document.getElementById("alerts-btn").classList.toggle("ringing", ALERTS.unseen > 0);
+}
+
+function alertLine(a) {
+  return `${a.student_name}${a.student_group ? ` (${a.student_group})` : ""} · ${a.test_title}`;
+}
+
+function notifyAlert(a) {
+  const box = document.getElementById("toasts") || Object.assign(document.createElement("div"), { id: "toasts", className: "toasts" });
+  document.body.appendChild(box);
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.innerHTML = `${a.image ? `<img src="${a.image}" alt="" />` : ""}
+    <div><strong>📵 ${escapeHtml(t("phone_alert"))}</strong><div class="small">${escapeHtml(alertLine(a))}</div></div>`;
+  el.onclick = () => { location.hash = "#/alerts"; el.remove(); };
+  box.appendChild(el);
+  setTimeout(() => el.remove(), 12000);
+  beep();
+  try {
+    if ("Notification" in window && Notification.permission === "granted") {
+      new Notification(`📵 ${t("phone_alert")}`, { body: alertLine(a), icon: a.image || undefined });
+    }
+  } catch {}
+}
+
+function beep() {
+  try {
+    const ctx = beep.ctx || (beep.ctx = new (window.AudioContext || window.webkitAudioContext)());
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.type = "square";
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.25, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.6);
+  } catch {}
+}
+
+async function enableNotifications() {
+  if (!("Notification" in window)) { alert(t("notify_unsupported")); return; }
+  await Notification.requestPermission();
+  renderAlerts();
+}
+
+async function renderAlerts() {
+  const btn = document.getElementById("notify-btn");
+  const perm = "Notification" in window ? Notification.permission : "unsupported";
+  btn.classList.toggle("hidden", perm === "granted");
+  const box = document.getElementById("alerts-list");
+  if (ALERTS.lastId === null) await pollAlerts();
+  if (!ALERTS.list.length) { box.innerHTML = `<div class="card muted">${t("no_alerts")}</div>`; }
+  else {
+    box.innerHTML = ALERTS.list.map(a => `
+      <div class="card alert-card ${a.seen ? "" : "new"}">
+        ${a.image ? `<img src="${a.image}" alt="" onclick="showAlertImage(${a.id})" />`
+                  : `<div class="alert-noimg">📵</div>`}
+        <div class="alert-body">
+          <div class="row"><strong>${escapeHtml(a.student_name)}</strong>
+            ${a.seen ? "" : `<span class="pill off">${t("new")}</span>`}</div>
+          <div class="meta">${escapeHtml(a.student_group || "—")} · ${new Date(a.created_at).toLocaleString()}</div>
+          <div class="small">${escapeHtml(a.test_title)}</div>
+          <div class="row" style="margin-top:8px">
+            <button class="small" onclick="location.hash='#/test/${a.test_id}/results'">${t("tab_results")}</button>
+            <button class="small danger" onclick="deleteAlert(${a.id})">×</button>
+          </div>
+        </div>
+      </div>`).join("");
+  }
+  if (ALERTS.unseen) {
+    try { await api("POST", "/api/alerts/seen"); } catch {}
+    ALERTS.unseen = 0;
+    ALERTS.list.forEach(a => { a.seen = 1; });  // still shown as new until the next visit
+  }
+  updateBell();
+}
+
+function showAlertImage(id) {
+  const a = ALERTS.list.find(x => x.id === id);
+  if (!a) return;
+  openModal(`<div class="row"><strong>${escapeHtml(alertLine(a))}</strong><span class="spacer"></span>
+    <button class="small" onclick="closeModal()">✕</button></div>
+    <img class="alert-big" src="${a.image}" alt="" />
+    <p class="meta">${new Date(a.created_at).toLocaleString()}</p>`);
+}
+
+async function deleteAlert(id) {
+  try { await api("DELETE", `/api/alerts/${id}`); } catch (e) { alert(e.message); return; }
+  ALERTS.list = ALERTS.list.filter(a => a.id !== id);
+  renderAlerts();
 }
 
 function openModal(html) {

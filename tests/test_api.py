@@ -172,3 +172,82 @@ def test_create_test_from_topic_only(client, teacher):
     assert gen.status_code == 200
 
     assert client.post("/api/upload", headers=teacher, data={"topic": "  "}).json()["detail"] == "topic_too_short"
+
+
+def test_camera_proctoring_events_and_suspicion(client, teacher, ready_test):
+    test_id, code = ready_test
+    assert client.get(f"/api/public/{code}").json()["proctoring"] is False
+    client.patch(f"/api/tests/{test_id}", headers=teacher, json={"proctoring": True})
+    assert client.get(f"/api/public/{code}").json()["proctoring"] is True
+
+    events = [{"type": "phone", "at": 30, "dur": 6}, {"type": "multi_face", "at": 50, "dur": 2},
+              {"type": "made_up", "at": 60, "dur": 1}]
+    r = client.post(f"/api/public/{code}/submit",
+                    json={"student_name": "Айгерім", "answers": {}, "proctor_events": events})
+    assert r.status_code == 200
+    clean = client.post(f"/api/public/{code}/submit", json={"student_name": "Дана", "answers": {}})
+    assert clean.status_code == 200
+
+    by_name = {a["student_name"]: a for a in client.get(f"/api/tests/{test_id}/results", headers=teacher).json()["attempts"]}
+    assert by_name["Дана"]["suspicion"] == 0
+    assert by_name["Айгерім"]["suspicion"] > 50
+    detail = client.get(f"/api/attempts/{by_name['Айгерім']['id']}", headers=teacher).json()
+    assert [e["type"] for e in detail["proctor_events"]] == ["phone", "multi_face"]  # unknown types dropped
+
+
+JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+
+
+def test_phone_alert_reaches_teacher_with_snapshot(client, teacher, ready_test):
+    test_id, code = ready_test
+    student = {"student_name": "Нұрлан", "student_group": "ИИ-21"}
+    # proctoring off: alerts are refused
+    assert client.post(f"/api/public/{code}/alert", json={**student, "image": JPEG}).status_code == 403
+    client.patch(f"/api/tests/{test_id}", headers=teacher, json={"proctoring": True})
+
+    assert client.post(f"/api/public/{code}/alert", json={**student, "image": JPEG}).json() == {"ok": True}
+    # a second alert right away is skipped; a broken image is dropped, not stored
+    assert client.post(f"/api/public/{code}/alert", json={**student, "image": JPEG}).json()["skipped"]
+    client.post(f"/api/public/{code}/alert", json={"student_name": "Басқа", "image": 'data:image/jpeg;base64,x" onerror="alert(1)'})
+
+    res = client.get("/api/alerts", headers=teacher).json()
+    assert res["unseen"] == 2
+    by_name = {a["student_name"]: a for a in res["alerts"]}
+    assert by_name["Нұрлан"]["image"] == JPEG and by_name["Нұрлан"]["test_title"]
+    assert by_name["Басқа"]["image"] is None
+    newest = max(a["id"] for a in res["alerts"])
+    assert client.get(f"/api/alerts?after={newest}", headers=teacher).json()["alerts"] == []
+
+    client.post("/api/alerts/seen", headers=teacher)
+    assert client.get("/api/alerts", headers=teacher).json()["unseen"] == 0
+
+    # other teachers see nothing
+    other = client.post("/api/auth/register", json={"username": "t_other_alerts", "password": "secret123"}).json()
+    assert client.get("/api/alerts", headers={"Authorization": f"Bearer {other['token']}"}).json()["alerts"] == []
+
+
+def test_phone_penalty_lock_and_ban(client, teacher, ready_test):
+    test_id, code = ready_test
+    student = {"student_name": "Әлия", "student_group": "А-1"}
+    caught = {**student, "answers": {}, "violation": True, "violation_reason": "phone"}
+    lock_url = f"/api/public/{code}/lock"
+
+    client.patch(f"/api/tests/{test_id}", headers=teacher,
+                 json={"proctoring": True, "phone_penalty": "lock", "phone_lock_minutes": 30})
+    assert client.post(f"/api/public/{code}/submit", json=caught).json()["score"] == 0
+    lock = client.post(lock_url, json=student).json()
+    assert 15 * 60 < lock["locked_seconds"] <= 30 * 60 and lock["banned"] is False
+
+    client.patch(f"/api/tests/{test_id}", headers=teacher, json={"phone_penalty": "ban"})
+    assert client.post(lock_url, json=student).json()["banned"] is True
+    assert client.post(f"/api/public/{code}/submit", json={**student, "answers": {}}).status_code == 423
+
+    client.patch(f"/api/tests/{test_id}", headers=teacher, json={"phone_penalty": "alarm"})
+    assert client.post(lock_url, json=student).json() == {"locked_seconds": 0, "banned": False}
+
+    # deleting the attempt lifts a ban
+    client.patch(f"/api/tests/{test_id}", headers=teacher, json={"phone_penalty": "ban"})
+    attempt = client.get(f"/api/tests/{test_id}/results", headers=teacher).json()["attempts"][0]
+    assert attempt["violation"] == 2
+    client.delete(f"/api/attempts/{attempt['id']}", headers=teacher)
+    assert client.post(lock_url, json=student).json()["banned"] is False

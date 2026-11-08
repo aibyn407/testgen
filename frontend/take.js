@@ -3,6 +3,8 @@
 const CODE = decodeURIComponent(location.pathname.split("/").filter(Boolean).pop() || "");
 const DRAFT_KEY = "draft_" + CODE;
 const LOCK_KEY = "lock_" + CODE;
+const BAN_KEY = "ban_" + CODE;
+const ALARM_SECONDS = 10;
 let TEST = null;      // public test info
 let DRAFT = null;     // {questions, answers, name, group, startedAt, idx, qStartedAt}
 let timerId = null;
@@ -10,12 +12,15 @@ let qTimerId = null;
 let lockTimerId = null;
 let submitting = false;
 let unloading = false;  // reload/close is not "leaving to another tab"
+let quizOpen = false;
 
 function loadDraft() { try { return JSON.parse(localStorage.getItem(DRAFT_KEY)); } catch { return null; } }
 function saveDraft() { try { localStorage.setItem(DRAFT_KEY, JSON.stringify(DRAFT)); } catch {} }
 function clearDraft() { try { localStorage.removeItem(DRAFT_KEY); } catch {} }
 function lockUntil() { try { return Number(localStorage.getItem(LOCK_KEY)) || 0; } catch { return 0; } }
 function setLock(until) { try { localStorage.setItem(LOCK_KEY, String(until)); } catch {} }
+function isBanned() { try { return !!localStorage.getItem(BAN_KEY); } catch { return false; } }
+function setBanned() { try { localStorage.setItem(BAN_KEY, "1"); } catch {} }
 
 // One question at a time with its own countdown.
 function stepMode() { return TEST.question_time > 0; }
@@ -28,17 +33,19 @@ function showOnly(id) {
 function showMessage(key) {
   const m = document.getElementById("message");
   m.dataset.key = key;
+  m.dataset.gate = "";
   m.textContent = t(key);
   showOnly("message");
 }
 
-function showLocked(until, justLeft) {
+function showLocked(until, reasonKey) {
   const m = document.getElementById("message");
   m.dataset.key = "";
+  m.dataset.gate = "";
   clearInterval(lockTimerId);
   const tick = () => {
     const left = Math.max(0, Math.round((until - Date.now()) / 1000));
-    m.innerHTML = `${justLeft ? `<p class="status err">${t("left_page")}</p>` : ""}
+    m.innerHTML = `${reasonKey ? `<p class="status err">${t(reasonKey)}</p>` : ""}
       <div class="muted">${t("locked_retry")}</div>
       <div class="lock-time">${fmtDuration(left)}</div>`;
     if (left <= 0) { clearInterval(lockTimerId); location.reload(); }
@@ -48,9 +55,19 @@ function showLocked(until, justLeft) {
   showOnly("message");
 }
 
+function showBanned(justCaught) {
+  const m = document.getElementById("message");
+  m.dataset.key = "";
+  m.dataset.gate = "";
+  m.innerHTML = `${justCaught ? `<p class="status err">${escapeHtml(t("phone_caught"))}</p>` : ""}
+    <div class="lock-time">⛔</div><p>${escapeHtml(t("banned"))}</p>`;
+  showOnly("message");
+}
+
 function onLangChange() {
   const m = document.getElementById("message");
   if (!m.classList.contains("hidden") && m.dataset.key) m.textContent = t(m.dataset.key);
+  if (!m.classList.contains("hidden") && m.dataset.gate) showCameraGate(m.dataset.gate);
   if (TEST) renderStartMeta();
   if (DRAFT && !document.getElementById("view-quiz").classList.contains("hidden")) {
     collectInto(DRAFT.answers);
@@ -73,10 +90,14 @@ async function init() {
   document.title = TEST.title;
 
   if (!TEST.is_open) { clearDraft(); showMessage("test_closed"); return; }
+  if (TEST.proctoring && TEST.phone_penalty === "ban" && isBanned()) { showBanned(false); return; }
   if (lockUntil() > Date.now()) { showLocked(lockUntil(), false); return; }
 
   DRAFT = loadDraft();
-  if (DRAFT && DRAFT.questions && DRAFT.questions.length) { openQuiz(); return; }
+  if (DRAFT && DRAFT.questions && DRAFT.questions.length) {
+    if (TEST.proctoring) retryCamera(); else openQuiz();
+    return;
+  }
   if (!TEST.questions.length) { showMessage("test_empty"); return; }
 
   renderStartMeta();
@@ -99,6 +120,8 @@ function rulesHtml() {
   const rules = [];
   if (stepMode()) rules.push(t("rule_qtime").replace("{s}", TEST.question_time));
   if (TEST.anti_cheat) rules.push(t("rule_anticheat").replace("{m}", TEST.lock_minutes));
+  if (TEST.proctoring) rules.push(t("rule_camera"));
+  if (TEST.proctoring) rules.push(t("rule_phone_" + TEST.phone_penalty).replace("{m}", TEST.phone_lock_minutes));
   return rules.map(r => `<li>${escapeHtml(r)}</li>`).join("");
 }
 
@@ -111,14 +134,26 @@ async function startTest(e) {
   try {
     const lock = await apiCall("POST", `/api/public/${encodeURIComponent(CODE)}/lock`,
       { student_name: name, student_group: group });
+    if (lock.banned) { setBanned(); showBanned(false); return; }
     if (lock.locked_seconds > 0) {
       setLock(Date.now() + lock.locked_seconds * 1000);
       showLocked(lockUntil(), false);
       return;
     }
   } catch {}
+  if (TEST.proctoring) {
+    const status = document.getElementById("start-status");
+    const btn = document.getElementById("start-btn");
+    status.textContent = "";
+    btn.disabled = true;
+    Alarm.unlock();
+    try { await Proctor.requestCamera(); }
+    catch (err) { status.textContent = t(cameraErrorKey(err)); return; }
+    finally { btn.disabled = false; }
+  }
   const now = Date.now();
-  DRAFT = { questions: TEST.questions, answers: {}, name, group, startedAt: now, idx: 0, qStartedAt: now };
+  DRAFT = { questions: TEST.questions, answers: {}, name, group, startedAt: now, idx: 0, qStartedAt: now,
+            proctorEvents: [] };
   saveDraft();
   openQuiz();
 }
@@ -129,8 +164,48 @@ function openQuiz() {
   document.getElementById("quiz-rules").innerHTML = TEST.anti_cheat ? rulesHtml() : "";
   renderQuestions();
   showOnly("view-quiz");
+  quizOpen = true;
   if (TEST.time_limit) startTimer();
   if (stepMode()) startQuestionTimer();
+  if (TEST.proctoring) startProctor();
+}
+
+// ---------- camera proctoring ----------
+
+function startProctor() {
+  if (!DRAFT.proctorEvents) DRAFT.proctorEvents = [];
+  Proctor.onChange = saveDraft;
+  Proctor.phoneMode = !!TEST.phone_detect;
+  Proctor.onPhone = onPhoneSeen;
+  Proctor.onCameraLost = () => {
+    document.getElementById("cam-box").classList.add("hidden");
+    if (!submitting) showCameraGate("camera_lost");
+  };
+  document.getElementById("cam-box").classList.remove("hidden");
+  Proctor.start(document.getElementById("cam-video"), DRAFT.startedAt, DRAFT.proctorEvents);
+}
+
+function stopProctor() {
+  Proctor.stop();
+  document.getElementById("cam-box").classList.add("hidden");
+}
+
+// Without camera access the test does not start (or continue).
+function showCameraGate(key) {
+  const m = document.getElementById("message");
+  m.dataset.key = "";
+  m.dataset.gate = key;
+  m.innerHTML = `<p class="status err">${escapeHtml(t(key))}</p>
+    <button class="primary big" onclick="retryCamera()">${escapeHtml(t("camera_enable"))}</button>`;
+  showOnly("message");
+}
+
+async function retryCamera() {
+  Alarm.unlock();
+  try { await Proctor.requestCamera(); }
+  catch (err) { showCameraGate(cameraErrorKey(err)); return; }
+  if (quizOpen) { showOnly("view-quiz"); startProctor(); }
+  else openQuiz();
 }
 
 function renderQuestions() {
@@ -254,11 +329,50 @@ function onMainButton() {
   else submitAnswers(false);
 }
 
-// Leaving for another tab or app ends the test with 0 points and locks it for a while.
+// A phone in the camera: siren, a snapshot to the teacher, and (unless the teacher chose
+// "alarm only") the test ends with 0 points.
+function onPhoneSeen(image) {
+  if (submitting || !quizOpen) return;
+  fetch(`/api/public/${encodeURIComponent(CODE)}/alert`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ student_name: DRAFT.name, student_group: DRAFT.group || "", type: "phone", image }),
+  }).catch(() => {});
+  Alarm.play(ALARM_SECONDS);
+  showPhoneAlarm();
+  if (TEST.phone_penalty !== "alarm") endForCheating("phone");
+}
+
+function showPhoneAlarm() {
+  let el = document.getElementById("phone-alarm");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "phone-alarm";
+    el.className = "phone-alarm";
+    document.body.appendChild(el);
+  }
+  const until = Date.now() + ALARM_SECONDS * 1000;
+  const tick = () => {
+    const left = Math.ceil((until - Date.now()) / 1000);
+    if (left <= 0) { clearInterval(el._timer); el.remove(); return; }
+    el.innerHTML = `<div class="phone-alarm-box"><div class="phone-alarm-icon">📵</div>
+      <h1>${escapeHtml(t("phone_alarm_title"))}</h1><p>${escapeHtml(t("phone_alarm_text"))}</p>
+      <div class="phone-alarm-left">${left}</div></div>`;
+  };
+  clearInterval(el._timer);
+  tick();
+  el._timer = setInterval(tick, 250);
+}
+
+// Leaving for another tab or app (or a phone in the camera) ends the test with 0 points and locks it for a while.
 function onLeavePage() {
-  if (unloading || submitting || !TEST || !TEST.anti_cheat || !DRAFT) return;
-  if (document.getElementById("view-quiz").classList.contains("hidden")) return;
+  if (unloading || submitting || !TEST || !TEST.anti_cheat || !DRAFT || !quizOpen) return;
+  endForCheating("left_page");
+}
+
+function endForCheating(reason) {
   submitting = true;
+  stopProctor();
   clearInterval(timerId);
   clearInterval(qTimerId);
   const answers = {};
@@ -266,15 +380,18 @@ function onLeavePage() {
   fetch(`/api/public/${encodeURIComponent(CODE)}/submit`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    keepalive: true,  // the request must survive the tab being in the background
+    keepalive: reason === "left_page",  // the request must survive the tab being in the background
     body: JSON.stringify({
       student_name: DRAFT.name, student_group: DRAFT.group || "", answers,
       duration_sec: Math.round((Date.now() - DRAFT.startedAt) / 1000), violation: true,
+      violation_reason: reason, proctor_events: DRAFT.proctorEvents || [],
     }),
   }).catch(() => {});
-  setLock(Date.now() + TEST.lock_minutes * 60 * 1000);
   clearDraft();
-  showLocked(lockUntil(), true);
+  if (reason === "phone" && TEST.phone_penalty === "ban") { setBanned(); showBanned(true); return; }
+  const minutes = reason === "phone" ? TEST.phone_lock_minutes : TEST.lock_minutes;
+  setLock(Date.now() + minutes * 60 * 1000);
+  showLocked(lockUntil(), reason === "left_page" ? "left_page" : "phone_caught");
 }
 
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") onLeavePage(); });
@@ -307,7 +424,9 @@ async function submitAnswers(auto, noConfirm) {
       student_group: DRAFT.group || "",
       answers,
       duration_sec: Math.round((Date.now() - DRAFT.startedAt) / 1000),
+      proctor_events: DRAFT.proctorEvents || [],
     });
+    stopProctor();
     clearInterval(timerId);
     clearInterval(qTimerId);
     const order = DRAFT.questions.map(q => q.id);

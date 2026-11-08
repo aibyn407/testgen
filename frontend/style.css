@@ -262,6 +262,7 @@ button.big { padding: 15px 24px; font-size: 17px; width: 100%; border-radius: 14
 .pill.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
 .pill.ok::before { content: "● "; }
 .pill.off { background: var(--err-soft); color: var(--err); border-color: transparent; }
+.pill.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); border-color: transparent; }
 .pill.type { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 
 /* ---------- test page ---------- */
@@ -467,3 +468,68 @@ td.wrap { white-space: normal; }
 textarea.paste-area { min-height: 220px; margin-bottom: 14px; line-height: 1.5; }
 .err-text { color: var(--err); font-weight: 700; }
 textarea.topic-area { min-height: 110px; margin-bottom: 14px; }
+
+/* ---------- camera proctoring ---------- */
+.cam-box {
+  position: fixed; right: 16px; bottom: 16px; z-index: 50; width: 168px; border-radius: 16px; overflow: hidden;
+  background: #000; border: 2px solid var(--border); box-shadow: var(--shadow);
+}
+.cam-box video { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; transform: scaleX(-1); }
+.cam-status {
+  position: absolute; left: 8px; bottom: 6px; display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 800; color: #fff; text-shadow: 0 1px 3px #000;
+}
+.cam-status i { width: 8px; height: 8px; border-radius: 50%; background: #e0384b; animation: pulse 1.4s ease-in-out infinite; }
+@media (max-width: 560px) { .cam-box { width: 104px; right: 10px; bottom: 10px; } }
+.proctor-log { border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; margin: 8px 0 14px; background: var(--panel-2); }
+.proctor-log ul { margin: 8px 0 4px; padding-left: 18px; display: grid; gap: 4px; }
+
+/* ---------- phone alarm (student) ---------- */
+.phone-alarm {
+  position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 16px;
+  background: #d0102a; color: #fff; text-align: center; animation: alarm-flash .5s steps(1) infinite;
+}
+@keyframes alarm-flash { 50% { background: #5a0010; } }
+.phone-alarm-box h1 { font-size: clamp(28px, 7vw, 56px); font-weight: 900; margin: 8px 0; letter-spacing: .02em; }
+.phone-alarm-box p { font-size: 18px; font-weight: 700; max-width: 520px; margin: 0 auto; }
+.phone-alarm-icon { font-size: 88px; line-height: 1; }
+.phone-alarm-left { font-size: 64px; font-weight: 900; margin-top: 12px; font-variant-numeric: tabular-nums; }
+
+/* ---------- teacher: settings, alerts ---------- */
+.sub-settings { margin: 0 0 4px 14px; padding-left: 14px; border-left: 3px solid var(--accent-soft); }
+#home-stats { grid-template-columns: repeat(4, 1fr); }
+#home-stats:empty { display: none; }
+.stat.clickable { cursor: pointer; transition: transform .15s; }
+.stat.clickable:hover { transform: translateY(-2px); }
+.stat.alarm { border-color: var(--err); }
+.stat.alarm .v { background: none; color: var(--err); }
+
+.bell {
+  position: relative; padding: 6px 10px; font-size: 18px; line-height: 1; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 12px;
+}
+.bell.ringing { animation: bell-ring 1.6s ease-in-out infinite; transform-origin: 50% 10%; }
+@keyframes bell-ring { 0%, 60%, 100% { transform: rotate(0); } 10%, 30% { transform: rotate(14deg); } 20%, 40% { transform: rotate(-14deg); } }
+.bell .badge {
+  position: absolute; top: -6px; right: -6px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 99px;
+  background: var(--err); color: #fff; font-size: 11px; font-weight: 900; display: grid; place-items: center;
+}
+
+.alerts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 12px; }
+.alert-card { margin: 0; padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+.alert-card.new { border-color: var(--err); box-shadow: 0 0 0 3px var(--err-soft), var(--shadow); }
+.alert-card img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; cursor: zoom-in; display: block; background: #000; }
+.alert-noimg { aspect-ratio: 4 / 3; display: grid; place-items: center; font-size: 48px; background: var(--panel-2); }
+.alert-body { padding: 12px 14px; }
+.alert-big { width: 100%; border-radius: 12px; margin: 10px 0; display: block; }
+
+.toasts { position: fixed; top: 76px; right: 16px; z-index: 90; display: grid; gap: 10px; width: min(340px, calc(100vw - 32px)); }
+.toast {
+  display: flex; gap: 10px; align-items: center; padding: 10px; border-radius: 14px; cursor: pointer;
+  background: var(--panel); border: 2px solid var(--err); box-shadow: var(--shadow); animation: toast-in .3s ease-out;
+}
+.toast img { width: 72px; height: 54px; object-fit: cover; border-radius: 8px; flex: none; }
+@keyframes toast-in { from { transform: translateX(30px); opacity: 0; } }
+@media (max-width: 640px) {
+  #home-stats { grid-template-columns: repeat(2, 1fr); }
+}

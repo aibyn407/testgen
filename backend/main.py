@@ -1,11 +1,12 @@
 import json
 import os
 import random
+import re
 import secrets
 import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
@@ -28,6 +29,12 @@ from . import ai, auth, db, export, parser, scoring  # noqa: E402  (needs .env l
 MAX_UPLOAD_MB = 20
 MAX_TEXT_CHARS = 500_000
 LOCK_MINUTES = 15  # a student who leaves the test page may retry only after this
+FOREVER = 10 ** 9  # "locked seconds" of a student removed from the test for good
+MAX_ALERT_IMAGE = 400_000  # characters of a base64 JPEG snapshot
+JPEG_DATA_URL = re.compile(r"data:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}")
+# attempts.violation: why a test ended with 0 points
+VIOLATION_LEFT_PAGE = 1
+VIOLATION_PHONE = 2
 QUESTION_TYPES = {"multiple_choice", "open", "matching"}
 
 db.init_db()
@@ -227,7 +234,10 @@ def list_tests(user: dict = Depends(auth.current_user)):
             """SELECT t.id, t.title, t.language, t.created_at, t.is_open, t.share_code,
                       (SELECT COUNT(*) FROM questions q JOIN topics tp ON tp.id = q.topic_id
                         WHERE tp.test_id = t.id) AS questions_count,
-                      (SELECT COUNT(*) FROM attempts WHERE test_id = t.id) AS attempts_count
+                      (SELECT COUNT(*) FROM attempts WHERE test_id = t.id) AS attempts_count,
+                      (SELECT AVG(percent) FROM attempts WHERE test_id = t.id) AS avg_percent,
+                      (SELECT COUNT(*) FROM alerts WHERE test_id = t.id) AS alerts_count,
+                      t.proctoring
                FROM tests t WHERE t.owner_id = ? ORDER BY t.id DESC""",
             (user["id"],),
         )
@@ -257,6 +267,10 @@ class TestSettings(BaseModel):
     show_answers: Optional[bool] = None
     anti_cheat: Optional[bool] = None
     question_time: Optional[int] = Field(None, ge=0, le=600)
+    proctoring: Optional[bool] = None
+    phone_detect: Optional[bool] = None
+    phone_penalty: Optional[Literal["alarm", "lock", "ban"]] = None
+    phone_lock_minutes: Optional[int] = Field(None, ge=1, le=1440)
 
 
 @app.patch("/api/tests/{test_id}")
@@ -378,6 +392,7 @@ def results(test_id: int, user: dict = Depends(auth.current_user)):
     )
     for a in attempts:
         a["grade_info"] = scoring.grade(a["percent"])
+        a.pop("proctor_events", None)
     return {"attempts": attempts, "question_stats": question_stats}
 
 
@@ -392,6 +407,7 @@ def get_attempt(attempt_id: int, user: dict = Depends(auth.current_user)):
     if not a:
         raise HTTPException(404, "attempt_not_found")
     a["details"] = json.loads(a["details"] or "[]")
+    a["proctor_events"] = json.loads(a["proctor_events"]) if a.get("proctor_events") else None
     a["grade_info"] = scoring.grade(a["percent"])
     return a
 
@@ -484,6 +500,10 @@ def public_test(code: str):
         "time_limit": test["time_limit"],
         "question_time": test["question_time"],
         "anti_cheat": bool(test["anti_cheat"]),
+        "proctoring": bool(test["proctoring"]),
+        "phone_detect": bool(test["phone_detect"]),
+        "phone_penalty": test["phone_penalty"],
+        "phone_lock_minutes": test["phone_lock_minutes"],
         "lock_minutes": LOCK_MINUTES,
         "questions": public,
     }
@@ -493,18 +513,28 @@ def _same_student(a: str, b: str) -> bool:
     return " ".join(a.lower().split()) == " ".join(b.lower().split())
 
 
-def _locked_seconds(c, test_id: int, name: str, group: str) -> int:
-    """Seconds left until this student may take the test again after leaving the page."""
-    since = datetime.now(timezone.utc) - timedelta(minutes=LOCK_MINUTES)
+def _locked_seconds(c, test: dict, name: str, group: str) -> int:
+    """Seconds left until this student may take the test again (FOREVER if removed for good).
+
+    Leaving the page locks for LOCK_MINUTES; a phone locks as the teacher chose.
+    Deleting the attempt in the results lifts the lock.
+    """
     rows = c.all(
-        "SELECT student_name, student_group, taken_at FROM attempts WHERE test_id = ? AND violation = 1 AND taken_at > ?",
-        (test_id, since.isoformat(timespec="seconds")),
+        "SELECT student_name, student_group, violation, taken_at FROM attempts WHERE test_id = ? AND violation > 0",
+        (test["id"],),
     )
     left = 0
     for r in rows:
-        if _same_student(r["student_name"], name) and _same_student(r["student_group"] or "", group):
-            until = datetime.fromisoformat(r["taken_at"]) + timedelta(minutes=LOCK_MINUTES)
-            left = max(left, int((until - datetime.now(timezone.utc)).total_seconds()))
+        if not (_same_student(r["student_name"], name) and _same_student(r["student_group"] or "", group)):
+            continue
+        if r["violation"] == VIOLATION_PHONE:
+            if test["phone_penalty"] == "ban":
+                return FOREVER
+            minutes = test["phone_lock_minutes"] if test["phone_penalty"] == "lock" else 0
+        else:
+            minutes = LOCK_MINUTES
+        until = datetime.fromisoformat(r["taken_at"]) + timedelta(minutes=minutes)
+        left = max(left, int((until - datetime.now(timezone.utc)).total_seconds()))
     return left
 
 
@@ -517,7 +547,14 @@ class LockReq(BaseModel):
 def lock_status(code: str, body: LockReq):
     with db.get_conn() as c:
         test = _public_test(c, code)
-        return {"locked_seconds": _locked_seconds(c, test["id"], body.student_name, body.student_group)}
+        left = _locked_seconds(c, test, body.student_name, body.student_group)
+    return {"locked_seconds": 0 if left == FOREVER else left, "banned": left == FOREVER}
+
+
+class ProctorEvent(BaseModel):
+    type: str = Field(max_length=20)
+    at: int = Field(0, ge=0)               # seconds since the test started
+    dur: int = Field(0, ge=0, le=36000)   # how long it lasted, seconds
 
 
 class SubmitReq(BaseModel):
@@ -525,7 +562,9 @@ class SubmitReq(BaseModel):
     student_group: str = Field("", max_length=40)
     answers: dict  # {question_id: answer}
     duration_sec: Optional[int] = Field(None, ge=0)
-    violation: bool = False  # the student left the test page: recorded as 0 points
+    violation: bool = False  # the test ended for cheating: recorded as 0 points
+    violation_reason: Literal["left_page", "phone"] = "left_page"
+    proctor_events: list[ProctorEvent] = Field(default_factory=list, max_length=300)
 
 
 @app.post("/api/public/{code}/submit")
@@ -535,7 +574,7 @@ def submit(code: str, body: SubmitReq):
         if not test["is_open"]:
             raise HTTPException(403, "test_closed")
         questions = _test_questions(c, test["id"])
-        if _locked_seconds(c, test["id"], body.student_name, body.student_group) > 0:
+        if _locked_seconds(c, test, body.student_name, body.student_group) > 0:
             raise HTTPException(423, "locked")
 
     if test["question_limit"] and test["question_limit"] < len(questions):
@@ -564,13 +603,17 @@ def submit(code: str, body: SubmitReq):
     score = round(score, 2)
     percent = round(score / total * 100, 1)
     g = scoring.grade(percent)
+    events = [e.model_dump() for e in body.proctor_events if e.type in scoring.PROCTOR_WEIGHTS]
+    proctored = bool(test["proctoring"])
     with db.get_conn() as c:
         c.insert(
             """INSERT INTO attempts (test_id, student_name, student_group, score, total, percent, grade,
-                                     details, duration_sec, violation, taken_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                     details, duration_sec, violation, proctor_events, suspicion, taken_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (test["id"], body.student_name.strip(), body.student_group.strip(), score, total, percent,
-             g["letter"], json.dumps(details, ensure_ascii=False), body.duration_sec, int(body.violation),
+             g["letter"], json.dumps(details, ensure_ascii=False), body.duration_sec,
+             (VIOLATION_PHONE if body.violation_reason == "phone" else VIOLATION_LEFT_PAGE) if body.violation else 0,
+             json.dumps(events) if proctored else None, scoring.suspicion(events) if proctored else None,
              db.now()),
         )
 
@@ -578,6 +621,77 @@ def submit(code: str, body: SubmitReq):
         "score": score, "total": total, "percent": percent, "grade": g,
         "details": details if test["show_answers"] else None,
     }
+
+
+class AlertReq(BaseModel):
+    student_name: str = Field(min_length=2, max_length=80)
+    student_group: str = Field("", max_length=40)
+    type: Literal["phone"] = "phone"
+    image: Optional[str] = Field(None, max_length=MAX_ALERT_IMAGE)  # data:image/jpeg;base64,...
+
+
+@app.post("/api/public/{code}/alert")
+def send_alert(code: str, body: AlertReq):
+    """The student's browser saw a phone: tell the teacher, with a snapshot of that moment."""
+    # only a real base64 JPEG: the teacher's page puts it straight into <img src>
+    image = body.image if body.image and JPEG_DATA_URL.fullmatch(body.image) else None
+    with db.get_conn() as c:
+        test = _public_test(c, code)
+        if not test["proctoring"]:
+            raise HTTPException(403, "proctoring_off")
+        # one alert per student per 20 seconds is enough
+        since = (datetime.now(timezone.utc) - timedelta(seconds=20)).isoformat(timespec="seconds")
+        recent = c.all("SELECT student_name, student_group FROM alerts WHERE test_id = ? AND created_at > ?",
+                       (test["id"], since))
+        if any(_same_student(r["student_name"], body.student_name)
+               and _same_student(r["student_group"] or "", body.student_group) for r in recent):
+            return {"ok": True, "skipped": True}
+        c.insert(
+            """INSERT INTO alerts (test_id, student_name, student_group, type, image, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (test["id"], body.student_name.strip(), body.student_group.strip(), body.type, image, db.now()),
+        )
+    return {"ok": True}
+
+
+# ---------- teacher: alerts ----------
+
+@app.get("/api/alerts")
+def list_alerts(after: int = 0, user: dict = Depends(auth.current_user)):
+    """Newest alerts from all of the teacher's tests. With `after`, only those newer than that id."""
+    with db.get_conn() as c:
+        alerts = c.all(
+            """SELECT a.id, a.test_id, t.title AS test_title, a.student_name, a.student_group, a.type,
+                      a.image, a.seen, a.created_at
+               FROM alerts a JOIN tests t ON t.id = a.test_id
+               WHERE t.owner_id = ? AND a.id > ? ORDER BY a.id DESC LIMIT 60""",
+            (user["id"], after),
+        )
+        unseen = c.one(
+            """SELECT COUNT(*) AS n FROM alerts a JOIN tests t ON t.id = a.test_id
+               WHERE t.owner_id = ? AND a.seen = 0""",
+            (user["id"],),
+        )["n"]
+    return {"alerts": alerts, "unseen": unseen}
+
+
+@app.post("/api/alerts/seen")
+def mark_alerts_seen(user: dict = Depends(auth.current_user)):
+    with db.get_conn() as c:
+        c.execute("UPDATE alerts SET seen = 1 WHERE test_id IN (SELECT id FROM tests WHERE owner_id = ?)",
+                  (user["id"],))
+    return {"ok": True}
+
+
+@app.delete("/api/alerts/{alert_id}")
+def delete_alert(alert_id: int, user: dict = Depends(auth.current_user)):
+    with db.get_conn() as c:
+        a = c.one("SELECT a.id FROM alerts a JOIN tests t ON t.id = a.test_id WHERE a.id = ? AND t.owner_id = ?",
+                  (alert_id, user["id"]))
+        if not a:
+            raise HTTPException(404, "alert_not_found")
+        c.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
+    return {"ok": True}
 
 
 # ---------- pages ----------

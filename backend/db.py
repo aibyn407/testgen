@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS tests (
     show_answers INTEGER NOT NULL DEFAULT 1,
     anti_cheat INTEGER NOT NULL DEFAULT 1,
     question_time INTEGER NOT NULL DEFAULT 40,
+    proctoring INTEGER NOT NULL DEFAULT 0,
+    phone_detect INTEGER NOT NULL DEFAULT 1,
+    phone_penalty TEXT NOT NULL DEFAULT 'lock',
+    phone_lock_minutes INTEGER NOT NULL DEFAULT 15,
     created_at TEXT NOT NULL
 );
 
@@ -86,9 +90,23 @@ CREATE TABLE IF NOT EXISTS attempts (
     details TEXT,
     duration_sec INTEGER,
     violation INTEGER NOT NULL DEFAULT 0,
+    proctor_events TEXT,
+    suspicion INTEGER,
     taken_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS alerts (
+    id {pk},
+    test_id INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+    student_name TEXT NOT NULL,
+    student_group TEXT,
+    type TEXT NOT NULL,
+    image TEXT,
+    seen INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_test ON alerts(test_id);
 CREATE INDEX IF NOT EXISTS idx_tests_owner ON tests(owner_id);
 CREATE INDEX IF NOT EXISTS idx_topics_test ON topics(test_id);
 CREATE INDEX IF NOT EXISTS idx_questions_topic ON questions(topic_id);
@@ -100,6 +118,12 @@ MIGRATIONS = [
     ("tests", "anti_cheat", "INTEGER NOT NULL DEFAULT 1"),
     ("tests", "question_time", "INTEGER NOT NULL DEFAULT 40"),
     ("attempts", "violation", "INTEGER NOT NULL DEFAULT 0"),
+    ("tests", "proctoring", "INTEGER NOT NULL DEFAULT 0"),
+    ("attempts", "proctor_events", "TEXT"),
+    ("attempts", "suspicion", "INTEGER"),
+    ("tests", "phone_detect", "INTEGER NOT NULL DEFAULT 1"),
+    ("tests", "phone_penalty", "TEXT NOT NULL DEFAULT 'lock'"),
+    ("tests", "phone_lock_minutes", "INTEGER NOT NULL DEFAULT 15"),
 ]
 
 

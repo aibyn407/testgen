@@ -71,3 +71,24 @@ def grade(percent: float) -> dict:
         if percent >= threshold:
             return {"letter": letter, "gpa": gpa, "text": text}
     return {"letter": "F", "gpa": 0.0, "text": "Қанағаттанарлықсыз"}
+
+
+# Camera proctoring: what the in-browser AI noticed, and how suspicious each kind is.
+PROCTOR_WEIGHTS = {
+    "no_face": 10,      # the student left the camera view
+    "look_away": 8,     # head turned to the side for a while
+    "multi_face": 25,   # someone else is in the frame
+    "phone": 30,        # a phone was seen
+    "camera_off": 30,   # the camera was switched off during the test
+}
+
+
+def suspicion(events: list[dict]) -> int:
+    """0..100: how likely the student was not working alone. The teacher makes the final call."""
+    total = 0.0
+    for e in events:
+        w = PROCTOR_WEIGHTS.get(e.get("type"), 0)
+        # long episodes count more, up to double
+        dur = min(max(float(e.get("dur") or 0), 0), 30)
+        total += w * (1 + dur / 30)
+    return min(100, round(total))
