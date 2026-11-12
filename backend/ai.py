@@ -27,26 +27,26 @@ def _client() -> genai.Client:
     return genai.Client(api_key=key)
 
 
-TYPE_ORDER = ("multiple_choice", "open", "matching")
+TYPE_ORDER = ("multiple_choice", "matching")
 
-# How many questions of each type (choice, written, matching) for a given total.
+# How many questions of each type (choice, matching) for a given total.
+# The written type was dropped; its slots went to multiple-choice.
 DISTRIBUTION = {
-    5: (3, 1, 1),
-    10: (4, 3, 3),
-    15: (8, 4, 3),
-    20: (11, 5, 4),
-    25: (14, 6, 5),
+    5: (4, 1),
+    10: (7, 3),
+    15: (12, 3),
+    20: (16, 4),
+    25: (20, 5),
 }
 
 
 def distribution(count: int) -> dict[str, int]:
     if count in DISTRIBUTION:
-        mc, op, mt = DISTRIBUTION[count]
+        mc, mt = DISTRIBUTION[count]
     else:
         mt = max(1, round(count * 0.2))
-        op = max(1, round(count * 0.25))
-        mc = count - op - mt
-    return dict(zip(TYPE_ORDER, (mc, op, mt)))
+        mc = count - mt
+    return dict(zip(TYPE_ORDER, (mc, mt)))
 
 
 def _build_prompt(topic_name: str, content: str, lang: str, need: dict[str, int], avoid: list[str]) -> str:
@@ -71,8 +71,9 @@ def _build_prompt(topic_name: str, content: str, lang: str, need: dict[str, int]
 
 {source}, строго в таком количестве по типам:
 - ровно {need["multiple_choice"]} вопросов типа "multiple_choice" (4 варианта, один правильный)
-- ровно {need["open"]} вопросов типа "open" (короткий письменный ответ, 1-5 слов)
 - ровно {need["matching"]} вопросов типа "matching" (сопоставить 4 пары термин↔определение)
+
+НЕ ВОЗВРАЩАЙ вопросы типа "open" или любые другие типы — только "multiple_choice" и "matching".
 
 {lang_note}
 
@@ -86,12 +87,6 @@ def _build_prompt(topic_name: str, content: str, lang: str, need: dict[str, int]
     "question": "текст вопроса",
     "options": ["A вариант", "B вариант", "C вариант", "D вариант"],
     "correct": "A вариант"
-  }},
-  {{
-    "type": "open",
-    "question": "текст вопроса",
-    "options": null,
-    "correct": "правильный ответ"
   }},
   {{
     "type": "matching",
@@ -183,9 +178,6 @@ def clean_questions(questions) -> list[dict]:
             correct = str(correct).strip()
             if correct not in options:
                 continue
-        elif qt == "open":
-            options = None
-            correct = str(correct).strip()
         elif qt == "matching":
             if not isinstance(options, dict) or not isinstance(correct, dict):
                 continue

@@ -36,7 +36,7 @@ JPEG_DATA_URL = re.compile(r"data:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}")
 VIOLATION_LEFT_PAGE = 1
 VIOLATION_PHONE = 2
 VIOLATION_CAMERA = 3  # lens covered or the student left the camera's view
-QUESTION_TYPES = {"multiple_choice", "open", "matching"}
+QUESTION_TYPES = {"multiple_choice", "matching"}
 
 db.init_db()
 app = FastAPI(title="TestGen")
@@ -512,9 +512,9 @@ def _public_test(c: db.Conn, code: str) -> dict:
 
 
 def _student_selection(questions: list[dict], limit: int, shuffle: bool) -> list[dict]:
-    """Questions for one student: grouped by type (choice, written, matching).
+    """Questions for one student: grouped by type (choice, matching).
 
-    With a limit, each type keeps its share (e.g. 10 of 30 -> 4 choice, 3 written, 3 matching).
+    With a limit, each type keeps its share (e.g. 10 of 30 -> 7 choice, 3 matching).
     """
     pools = {t: [q for q in questions if q["type"] == t] for t in ai.TYPE_ORDER}
     if shuffle:

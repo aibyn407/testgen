@@ -37,10 +37,11 @@ def test_clean_questions_drops_broken_ones():
         {"type": "multiple_choice", "question": "Q", "options": ["a", "b"], "correct": "c"},  # correct not in options
         {"type": "matching", "question": "Q", "options": {"left": ["x"], "right": ["y"]}, "correct": {"z": "y"}},
         {"type": "essay", "question": "Q", "correct": "x"},
-        {"type": "open", "question": "Q", "options": None, "correct": "ok"},
+        {"type": "open", "question": "Q", "options": None, "correct": "ok"},  # written questions were dropped
+        {"type": "multiple_choice", "question": "Q2", "options": ["a", "b"], "correct": "a"},
     ]
     cleaned = ai.clean_questions(raw)
-    assert len(cleaned) == 1 and cleaned[0]["type"] == "open"
+    assert len(cleaned) == 1 and cleaned[0]["type"] == "multiple_choice"
 
 
 def test_split_topics_by_lectures():
