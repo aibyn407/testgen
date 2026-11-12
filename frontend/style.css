@@ -412,6 +412,17 @@ textarea.topic-area { min-height: 110px; margin-bottom: 14px; }
 .toast img { width: 72px; height: 54px; object-fit: cover; border-radius: 10px; flex: none; }
 @keyframes toast-in { from { transform: translateX(40px); opacity: 0; } }
 
+/* ---------- phones: same look, far less work per frame ---------- */
+/* Blur behind every card, a fixed page background and drifting blurred blobs made phones lag on taps. */
+@media (pointer: coarse), (max-width: 760px) {
+  *, *::before, *::after { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+  .card, .question { background: var(--panel-solid); }
+  header, .timer { background: color-mix(in srgb, var(--bg) 94%, transparent); }
+  .menu { background: color-mix(in srgb, var(--bg) 97%, transparent); }
+  body[data-bg] { background-attachment: scroll; }
+  .backdrop i { animation: none; filter: blur(60px); }
+}
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 860px) {
   .links { display: none; }

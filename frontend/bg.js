@@ -3,10 +3,16 @@
 
 const BG_LOOKS = ["steppe", "aurora", "ocean", "sunset", "paper"];
 const REDUCED_MOTION = matchMedia("(prefers-reduced-motion: reduce)").matches;
+// Phones: the full-screen sky redrawn 60 times a second (and every blurred card re-blurred with it)
+// left too little CPU/GPU for taps, so there it is drawn at a lower resolution, a few times a second.
+const LIGHT_MODE = matchMedia("(pointer: coarse), (max-width: 760px)").matches;
+const SKY_FRAME_MS = LIGHT_MODE ? 160 : 0;
 
 const TGBg = {
   _sky: null,
   _stars: [],
+  _lastDraw: 0,
+  paused: false,  // set while the camera AI runs on a phone: the sky then stays still
 
   init() {
     document.body.insertAdjacentHTML("afterbegin",
@@ -39,7 +45,7 @@ const TGBg = {
   },
 
   _makeStars() {
-    const dpr = Math.min(2, devicePixelRatio || 1), c = this._sky;
+    const dpr = LIGHT_MODE ? 1 : Math.min(2, devicePixelRatio || 1), c = this._sky;
     c.width = Math.round(innerWidth * dpr); c.height = Math.round(innerHeight * dpr);
     this._stars = Array.from({ length: Math.round(innerWidth * innerHeight / 9000) }, () => ({
       x: Math.random() * c.width, y: Math.random() * c.height * .85,
@@ -48,6 +54,11 @@ const TGBg = {
   },
 
   _drawSky(time) {
+    if ((this.paused && this._lastDraw) || time - this._lastDraw < SKY_FRAME_MS) {
+      requestAnimationFrame(t => this._drawSky(t));
+      return;
+    }
+    this._lastDraw = time;
     const c = this._sky, ctx = c.getContext("2d");
     ctx.clearRect(0, 0, c.width, c.height);
     if (document.body.dataset.bg === "steppe") {
@@ -106,7 +117,7 @@ const TGParticles = {
   },
 
   _resize() {
-    this.dpr = Math.min(2, devicePixelRatio || 1);
+    this.dpr = LIGHT_MODE ? 1 : Math.min(2, devicePixelRatio || 1);
     this.W = this.canvas.width = Math.round(innerWidth * this.dpr);
     this.H = this.canvas.height = Math.round(innerHeight * this.dpr);
     this._build();

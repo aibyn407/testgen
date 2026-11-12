@@ -179,6 +179,7 @@ function openQuiz() {
 // ---------- camera proctoring ----------
 
 function startProctor() {
+  if (LIGHT_MODE) TGBg.paused = true;  // leave the phone's CPU to the camera AI and the student's taps
   if (!DRAFT.proctorEvents) DRAFT.proctorEvents = [];
   Proctor.onChange = saveDraft;
   Proctor.phoneMode = !!TEST.phone_detect;
@@ -194,6 +195,7 @@ function startProctor() {
 }
 
 function stopProctor() {
+  TGBg.paused = false;
   Proctor.stop();
   document.getElementById("cam-box").classList.add("hidden");
 }
