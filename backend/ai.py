@@ -3,13 +3,21 @@ import os
 import re
 import time
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
 from .scoring import _norm
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 AI_CALL_TIMEOUT_MS = 60_000   # one Gemini request
 AI_TOTAL_SECONDS = 80         # all retries together; the proxy in front of Render cuts requests at ~100 s
+# When Google says the model is overloaded (503) or rate-limited (429), wait a moment, retry, then try another model.
+FALLBACK_MODELS = [m for m in dict.fromkeys([MODEL, "gemini-flash-latest"])]
+BUSY_CODES = {429, 500, 503, 504}
+BUSY_RETRY_DELAY = 3
+
+
+class AIBusy(Exception):
+    """Every model we tried was overloaded: the teacher should try again in a minute."""
 
 LANG_INSTRUCTIONS = {
     "kz": "Барлық сұрақтар мен жауаптарды ТЕК ҚАЗАҚ тілінде жаз.",
@@ -117,17 +125,28 @@ def _extract_json(text: str):
 
 def _ask_model(prompt: str) -> list:
     client = _client()  # keep a reference: the HTTP connection closes when the client is garbage-collected
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            temperature=0.4,
-            max_output_tokens=8000,
-            response_mime_type="application/json",
-        ),
-    )
-    return _extract_json(response.text or "")
+    last_error = None
+    for model in FALLBACK_MODELS:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        temperature=0.4,
+                        max_output_tokens=8000,
+                        response_mime_type="application/json",
+                    ),
+                )
+                return _extract_json(response.text or "")
+            except errors.APIError as e:
+                if e.code not in BUSY_CODES:
+                    raise
+                last_error = e
+                if attempt == 0:
+                    time.sleep(BUSY_RETRY_DELAY)
+    raise AIBusy(str(last_error))
 
 
 def question_key(q: dict) -> str:
@@ -157,7 +176,13 @@ def generate_questions(topic_name: str, content: str, lang: str = "kz", count: i
         if attempt and time.monotonic() > deadline - AI_CALL_TIMEOUT_MS / 1000 / 2:
             break  # no time for another round: keep what we have rather than time out
         prompt = _build_prompt(topic_name, content, lang, need, avoid + [q["question"] for q in picked])
-        for q in clean_questions(_ask_model(prompt)):
+        try:
+            answer = _ask_model(prompt)
+        except AIBusy:
+            if picked:
+                break  # a top-up round failed: keep the questions we already have
+            raise
+        for q in clean_questions(answer):
             key = question_key(q)
             if need[q["type"]] > 0 and key not in seen:
                 seen.add(key)

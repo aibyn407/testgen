@@ -88,3 +88,49 @@ def test_prompt_without_material_uses_general_knowledge():
     assert "МАТЕРИАЛА НЕТ" in topic_only and "Қазақ хандығы" in topic_only
     # the generator must not ASK for written questions (though it may mention "open" in a negative rule)
     assert 'вопросов типа "open"' not in with_text
+
+
+class _FakeModels:
+    def __init__(self, plan):
+        self.plan, self.calls = plan, []
+
+    def generate_content(self, model, contents, config):
+        self.calls.append(model)
+        result = self.plan.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return type("R", (), {"text": result})()
+
+
+def _fake_client(monkeypatch, plan):
+    from types import SimpleNamespace
+    models = _FakeModels(plan)
+    monkeypatch.setattr(ai, "_client", lambda: SimpleNamespace(models=models))
+    monkeypatch.setattr(ai.time, "sleep", lambda s: None)
+    return models
+
+
+def test_busy_model_is_retried_then_another_model_is_used(monkeypatch):
+    from google.genai import errors
+    busy = lambda: errors.ServerError(503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}})
+    models = _fake_client(monkeypatch, [busy(), busy(), '[{"type":"multiple_choice","question":"Q?","options":["a","b"],"correct":"a"}]'])
+    assert ai._ask_model("p")[0]["question"] == "Q?"
+    assert models.calls == [ai.FALLBACK_MODELS[0], ai.FALLBACK_MODELS[0], ai.FALLBACK_MODELS[1]]
+
+
+def test_all_models_busy_raises_ai_busy(monkeypatch):
+    import pytest
+    from google.genai import errors
+    busy = lambda: errors.ServerError(503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}})
+    _fake_client(monkeypatch, [busy() for _ in range(4)])
+    with pytest.raises(ai.AIBusy):
+        ai._ask_model("p")
+
+
+def test_other_api_errors_are_not_retried(monkeypatch):
+    import pytest
+    from google.genai import errors
+    models = _fake_client(monkeypatch, [errors.ClientError(400, {"error": {"code": 400, "message": "bad", "status": "INVALID_ARGUMENT"}})])
+    with pytest.raises(errors.ClientError):
+        ai._ask_model("p")
+    assert len(models.calls) == 1

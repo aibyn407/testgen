@@ -372,6 +372,8 @@ def generate_for_topic(topic_id: int, body: GenerateReq, user: dict = Depends(au
     try:
         questions = ai.generate_questions(topic["name"], content, lang=test["language"], count=body.count,
                                           avoid=others)
+    except ai.AIBusy:
+        raise HTTPException(503, "ai_busy")
     except Exception as e:
         raise HTTPException(502, f"ai_error: {e}")
     if not questions:
