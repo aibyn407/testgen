@@ -28,7 +28,9 @@ def _client() -> genai.Client:
     if not key:
         raise RuntimeError("GEMINI_API_KEY не задан. Получи ключ на https://aistudio.google.com/apikey")
     # Without a timeout a slow or stuck Gemini call keeps the teacher's button spinning forever.
-    return genai.Client(api_key=key, http_options=types.HttpOptions(timeout=AI_CALL_TIMEOUT_MS))
+    # google-genai 3.x talks to API v1 by default, where the "-latest" model aliases do not exist.
+    return genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1beta",
+                                                                     timeout=AI_CALL_TIMEOUT_MS))
 
 
 TYPE_ORDER = ("multiple_choice", "matching")
