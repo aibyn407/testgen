@@ -250,6 +250,7 @@ const I18N = {
     err_text_too_long: "Мәтін тым ұзын",
     err_no_input: "Файл таңдаңыз немесе мәтін қойыңыз",
     err_ai_empty: "AI сұрақ жасай алмады, қайталап көріңіз",
+    err_timeout: "AI тым ұзақ жауап берді. Қайталап көріңіз немесе сұрақ санын азайтыңыз.",
     err_invalid_question: "Сұрақ дұрыс толтырылмаған (дұрыс жауап нұсқалардың ішінде болуы керек)",
     err_test_closed: "Тест жабылған",
     err_validation: "Деректер қате толтырылған (логин 3+, құпиясөз 6+ таңба)",
@@ -499,6 +500,7 @@ const I18N = {
     err_text_too_long: "Текст слишком длинный",
     err_no_input: "Выберите файл или вставьте текст",
     err_ai_empty: "AI не смог создать вопросы, попробуйте ещё раз",
+    err_timeout: "AI отвечает слишком долго. Попробуйте ещё раз или уменьшите число вопросов.",
     err_invalid_question: "Вопрос заполнен неверно (правильный ответ должен быть среди вариантов)",
     err_test_closed: "Тест закрыт",
     err_validation: "Неверные данные (логин от 3, пароль от 6 символов)",
@@ -748,6 +750,7 @@ const I18N = {
     err_text_too_long: "The text is too long",
     err_no_input: "Choose a file or paste text",
     err_ai_empty: "AI produced no questions, try again",
+    err_timeout: "The AI took too long. Try again or ask for fewer questions.",
     err_invalid_question: "Question is invalid (the correct answer must be one of the options)",
     err_test_closed: "The test is closed",
     err_validation: "Invalid data (username 3+, password 6+ characters)",
@@ -786,22 +789,30 @@ function setLang(lang) {
 }
 
 // Shared helpers for both pages
-async function apiCall(method, path, body, { isForm = false, token = null, raw = false } = {}) {
+async function apiCall(method, path, body, { isForm = false, token = null, raw = false, timeoutMs = 0 } = {}) {
   const opts = { method, headers: {} };
+  let timer = null;
+  if (timeoutMs) {
+    const ctrl = new AbortController();
+    opts.signal = ctrl.signal;
+    timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  }
   if (token) opts.headers["Authorization"] = "Bearer " + token;
   if (body) {
     if (isForm) opts.body = body;
     else { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
   }
   let r;
-  try { r = await fetch(path, opts); } catch { throw new Error(t("err_network")); }
+  try { r = await fetch(path, opts); }
+  catch (e) { throw new Error(t(e && e.name === "AbortError" ? "err_timeout" : "err_network")); }
+  finally { clearTimeout(timer); }
   if (!r.ok) {
     let code = "";
     try {
       const j = await r.json();
       code = typeof j.detail === "string" ? j.detail : (Array.isArray(j.detail) ? "validation" : "");
     } catch {}
-    const err = new Error(code.startsWith("ai_error") ? "AI: " + code.slice(10) : (t("err_" + code) !== "err_" + code ? t("err_" + code) : (code || r.statusText)));
+    const err = new Error(code.startsWith("ai_error") ? "AI: " + code.slice(10) : (t("err_" + code) !== "err_" + code ? t("err_" + code) : (code || r.statusText || "HTTP " + r.status)));
     err.status = r.status;
     err.code = code;
     throw err;

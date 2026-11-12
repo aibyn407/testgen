@@ -1,12 +1,15 @@
 import json
 import os
 import re
+import time
 from google import genai
 from google.genai import types
 
 from .scoring import _norm
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
+AI_CALL_TIMEOUT_MS = 60_000   # one Gemini request
+AI_TOTAL_SECONDS = 80         # all retries together; the proxy in front of Render cuts requests at ~100 s
 
 LANG_INSTRUCTIONS = {
     "kz": "Барлық сұрақтар мен жауаптарды ТЕК ҚАЗАҚ тілінде жаз.",
@@ -24,7 +27,8 @@ def _client() -> genai.Client:
     key = os.getenv("GEMINI_API_KEY")
     if not key:
         raise RuntimeError("GEMINI_API_KEY не задан. Получи ключ на https://aistudio.google.com/apikey")
-    return genai.Client(api_key=key)
+    # Without a timeout a slow or stuck Gemini call keeps the teacher's button spinning forever.
+    return genai.Client(api_key=key, http_options=types.HttpOptions(timeout=AI_CALL_TIMEOUT_MS))
 
 
 TYPE_ORDER = ("multiple_choice", "matching")
@@ -142,11 +146,14 @@ def generate_questions(topic_name: str, content: str, lang: str = "kz", count: i
     seen = {_norm(q) for q in avoid}
     picked: list[dict] = []
 
-    for _ in range(3):
+    deadline = time.monotonic() + AI_TOTAL_SECONDS
+    for attempt in range(3):
         have = {t: sum(1 for q in picked if q["type"] == t) for t in TYPE_ORDER}
         need = {t: plan[t] - have[t] for t in TYPE_ORDER}
         if not any(need.values()):
             break
+        if attempt and time.monotonic() > deadline - AI_CALL_TIMEOUT_MS / 1000 / 2:
+            break  # no time for another round: keep what we have rather than time out
         prompt = _build_prompt(topic_name, content, lang, need, avoid + [q["question"] for q in picked])
         for q in clean_questions(_ask_model(prompt)):
             key = question_key(q)

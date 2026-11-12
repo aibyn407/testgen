@@ -519,7 +519,8 @@ async function generateTopic(topicId, { silent = false } = {}) {
   const btn = document.getElementById("gen-" + topicId);
   if (btn) { btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> ${t("generating")}`; }
   try {
-    await api("POST", `/api/topics/${topicId}/generate`, { count: Number(document.getElementById("gen-count").value) });
+    await api("POST", `/api/topics/${topicId}/generate`, { count: Number(document.getElementById("gen-count").value) },
+              { timeoutMs: 120000 });
     await reloadTest();
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = t("generate"); }
@@ -534,12 +535,12 @@ async function generateAll() {
   const todo = S.data.topics.filter(tp => !tp.questions_count);
   const targets = todo.length ? todo : S.data.topics;
   if (!todo.length && !confirm(t("confirm_regenerate"))) { btn.disabled = false; return; }
-  let failed = 0;
+  let failed = 0, lastError = "";
   for (const tp of targets) {
-    try { await generateTopic(tp.id, { silent: true }); } catch { failed++; }
+    try { await generateTopic(tp.id, { silent: true }); } catch (e) { failed++; lastError = e.message; }
   }
   btn.disabled = false;
-  if (failed) alert(`${t("err_ai_empty")} (${failed})`);
+  if (failed) alert(`${lastError || t("err_ai_empty")} (${failed})`);
 }
 
 // ---------- settings tab ----------
