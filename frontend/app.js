@@ -554,6 +554,7 @@ function renderSettings() {
   document.getElementById("s-show").checked = !!x.show_answers;
   document.getElementById("s-qtime").value = x.question_time;
   document.getElementById("s-anticheat").checked = !!x.anti_cheat;
+  document.getElementById("s-lock-minutes").value = x.lock_minutes || 15;
   document.getElementById("s-proctoring").checked = !!x.proctoring;
   document.getElementById("s-phone-detect").checked = !!x.phone_detect;
   document.getElementById("s-phone-penalty").value = x.phone_penalty;
@@ -575,6 +576,7 @@ async function saveSettings(e) {
       show_answers: document.getElementById("s-show").checked,
       question_time: Number(document.getElementById("s-qtime").value) || 0,
       anti_cheat: document.getElementById("s-anticheat").checked,
+      lock_minutes: Math.max(1, Number(document.getElementById("s-lock-minutes").value) || 15),
       proctoring: document.getElementById("s-proctoring").checked,
       phone_detect: document.getElementById("s-phone-detect").checked,
       phone_penalty: document.getElementById("s-phone-penalty").value,
@@ -586,9 +588,11 @@ async function saveSettings(e) {
 }
 
 // Phone options only matter with the camera on; the minutes only for "lock".
+// The leave-page lock minutes only matter when anti-cheat is on.
 function syncPhoneSettings() {
   document.getElementById("phone-settings").classList.toggle("hidden", !document.getElementById("s-proctoring").checked);
   document.getElementById("phone-minutes-row").classList.toggle("hidden", document.getElementById("s-phone-penalty").value !== "lock");
+  document.getElementById("lock-minutes-row").classList.toggle("hidden", !document.getElementById("s-anticheat").checked);
 }
 
 async function download(kind) {

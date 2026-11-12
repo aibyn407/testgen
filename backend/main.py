@@ -327,6 +327,7 @@ class TestSettings(BaseModel):
     phone_detect: Optional[bool] = None
     phone_penalty: Optional[Literal["alarm", "lock", "ban"]] = None
     phone_lock_minutes: Optional[int] = Field(None, ge=1, le=1440)
+    lock_minutes: Optional[int] = Field(None, ge=1, le=1440)
 
 
 @app.patch("/api/tests/{test_id}")
@@ -562,7 +563,7 @@ def public_test(code: str):
         "phone_detect": bool(test["phone_detect"]),
         "phone_penalty": test["phone_penalty"],
         "phone_lock_minutes": test["phone_lock_minutes"],
-        "lock_minutes": LOCK_MINUTES,
+        "lock_minutes": test["lock_minutes"] or LOCK_MINUTES,
         "questions": public,
     }
 
@@ -590,7 +591,7 @@ def _locked_seconds(c, test: dict, name: str, group: str) -> int:
                 return FOREVER
             minutes = test["phone_lock_minutes"] if test["phone_penalty"] == "lock" else 0
         else:
-            minutes = LOCK_MINUTES
+            minutes = test["lock_minutes"] or LOCK_MINUTES
         until = datetime.fromisoformat(r["taken_at"]) + timedelta(minutes=minutes)
         left = max(left, int((until - datetime.now(timezone.utc)).total_seconds()))
     return left

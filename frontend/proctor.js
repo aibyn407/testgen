@@ -5,14 +5,16 @@
 const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 const MODELS = "https://storage.googleapis.com/mediapipe-models";
 
+// Phones are slow to run the models — a wider tick stops the UI from stuttering on taps.
+const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 // How long a condition must last before it becomes an event, ms.
 const THRESHOLDS = { no_face: 3000, look_away: 3000, multi_face: 1500, phone: 1000, covered: 2000 };
 const GRACE_MS = 1500;   // a short flicker does not split one episode into two
-const TICK_MS = 400;
-const PHONE_EVERY = 1400;
+const TICK_MS = IS_MOBILE ? 650 : 400;
+const PHONE_EVERY = IS_MOBILE ? 2200 : 1400;
 // Phone mode: catches a second phone held up to the screen (e.g. Google Lens) faster and more readily.
 // Every other run looks at one quarter of the frame enlarged, so a phone far from the camera is still big enough.
-const PHONE_MODE = { every: 700, threshold: 0, minScore: 0.28 };
+const PHONE_MODE = { every: IS_MOBILE ? 1100 : 700, threshold: 0, minScore: 0.28 };
 const PHONE_HITS = { need: 2, windowMs: 3500 };  // a phone counts once it is found twice within this window
 const PHONE_MIN_SCORE = 0.45;
 const YAW_LIMIT = 0.55;  // nose offset from the eyes' midpoint, in eye distances
@@ -53,8 +55,11 @@ const Proctor = {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       throw Object.assign(new Error("no mediaDevices"), { name: "NotSupportedError" });
     }
+    // A smaller frame on phones keeps MediaPipe from starving the main thread and makes taps feel responsive.
+    const size = IS_MOBILE ? { width: { ideal: 640 }, height: { ideal: 480 } }
+                           : { width: { ideal: 1280 }, height: { ideal: 720 } };
     this.stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false,
+      video: { ...size, facingMode: "user" }, audio: false,
     });
     this.stream.getVideoTracks().forEach(tr => tr.addEventListener("ended", () => this._cameraLost()));
     return this.stream;

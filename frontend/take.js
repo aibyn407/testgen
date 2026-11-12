@@ -166,7 +166,8 @@ async function startTest(e) {
 function openQuiz() {
   document.getElementById("quiz-title").textContent = TEST.title;
   document.getElementById("quiz-student").textContent = [DRAFT.name, DRAFT.group].filter(Boolean).join(" · ");
-  document.getElementById("quiz-rules").innerHTML = TEST.anti_cheat ? rulesHtml() : "";
+  // the rules are shown on the start card only; keeping them above the questions crowds the test on a phone
+  document.getElementById("quiz-rules").innerHTML = "";
   renderQuestions();
   showOnly("view-quiz");
   quizOpen = true;
@@ -354,7 +355,9 @@ function onMainButton() {
 }
 
 // A camera violation (a phone, a covered lens, or the student gone from the frame): siren,
-// a snapshot to the teacher, and (unless the teacher chose "alarm only") the test ends with 0 points.
+// a snapshot to the teacher, and the test ends with 0 points.
+// Leaving the frame or covering the lens always ends the test — a student cannot keep taking a test off camera
+// even when the teacher chose "alarm only" for phones, since that penalty was meant for phones alone.
 function onCameraViolation(kind, image) {
   if (submitting || !quizOpen) return;
   hideFaceWarn();
@@ -365,7 +368,8 @@ function onCameraViolation(kind, image) {
   }).catch(() => {});
   Alarm.play(ALARM_SECONDS);
   showAlarm(kind);
-  if (TEST.phone_penalty !== "alarm") endForCheating(kind === "phone" ? "phone" : "camera");
+  if (kind === "phone") { if (TEST.phone_penalty !== "alarm") endForCheating("phone"); return; }
+  endForCheating("camera");  // no_face / covered — always end the test
 }
 
 // The student's face must stay in the frame: after a few seconds away a countdown starts.

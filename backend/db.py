@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS tests (
     phone_detect INTEGER NOT NULL DEFAULT 1,
     phone_penalty TEXT NOT NULL DEFAULT 'lock',
     phone_lock_minutes INTEGER NOT NULL DEFAULT 15,
+    lock_minutes INTEGER NOT NULL DEFAULT 15,
     created_at TEXT NOT NULL
 );
 
@@ -124,6 +125,7 @@ MIGRATIONS = [
     ("tests", "phone_detect", "INTEGER NOT NULL DEFAULT 1"),
     ("tests", "phone_penalty", "TEXT NOT NULL DEFAULT 'lock'"),
     ("tests", "phone_lock_minutes", "INTEGER NOT NULL DEFAULT 15"),
+    ("tests", "lock_minutes", "INTEGER NOT NULL DEFAULT 15"),
     ("users", "full_name", "TEXT"),
     ("users", "school", "TEXT"),
     ("users", "subject", "TEXT"),
